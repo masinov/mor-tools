@@ -1,6 +1,5 @@
 from ortools.sat.python import cp_model
-from typing import Dict, List, Optional, Union, Any
-import uuid
+from typing import Dict, List, Optional, Any
 
 class EnhancedCpModel(cp_model.CpModel):
     """
@@ -54,34 +53,52 @@ class EnhancedCpModel(cp_model.CpModel):
     # -------------------------------
     # Constraint management
     # -------------------------------
-    def Add(self, constraint, name: Optional[str] = None):
+    def Add(self, constraint, name: Optional[str] = None) -> cp_model.Constraint:
+        """
+        Add a constraint to the model with optional name and automatic enable/disable support.
+
+        Parameters
+        ----------
+        constraint : Boolean or linear expression
+            The constraint to add, e.g., x + y >= 5.
+        name : Optional[str]
+            A unique name for this constraint. If None, a default name is assigned.
+
+        Returns
+        -------
+        ortools.sat.python.cp_model.Constraint
+            The added OR-Tools Constraint object.
+        """
+        # Generate unique constraint ID
         constraint_id = f"{name or 'constraint'}_{self._constraint_counter}"
         self._constraint_counter += 1
 
+        # Validate name uniqueness
         if name is None:
             name = constraint_id
         elif name in self._constraint_names:
             raise ValueError(f"Constraint name '{name}' already exists")
-
         self._constraint_names.add(name)
 
+        # Create enable variable for conditional enforcement
         enable_var = self.NewBoolVar(f"enable_{name}")
-        constraint.OnlyEnforceIf(enable_var)
 
-        # Enable by default
-        super().Add(enable_var == 1)
+        # Add the conditional constraint
+        conditional_constraint = super().Add(constraint).OnlyEnforceIf(enable_var)
 
-        result = super().Add(constraint)
 
+        # Register constraint for later enable/disable and submodel support
         self._constraint_registry[constraint_id] = {
             'name': name,
-            'constraint': constraint,
-            'ortools_constraint': result,
+            'constraint': constraint,  # original expression
+            'ortools_constraint': conditional_constraint,  # actual Constraint object
             'enable_var': enable_var,
             'enabled': True
         }
 
-        return result
+        # Return the Constraint object so API usage matches OR-Tools
+        return conditional_constraint
+
 
     def enable_constraint(self, name: str):
         cid = self._find_constraint_by_name(name)

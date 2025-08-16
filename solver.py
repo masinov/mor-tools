@@ -3,7 +3,6 @@ from typing import List, Dict, Any, Optional, Union
 import copy
 import time
 
-
 class EnhancedCpSolver(cp_model.CpSolver):
     """
     Enhanced CpSolver with:
