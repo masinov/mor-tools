@@ -134,28 +134,26 @@ class EnhancedCpModel(_cp.CpModel):
             other: The source EnhancedCpModel to clone metadata from.
             
         Note:
-            This is a simplified implementation. Variable references are reconstructed
-            based on proto indices, which may not work correctly in all cases.
-            For production use, consider a more sophisticated approach that maps
-            variables by name rather than index.
+            This implementation copies metadata by name rather than trying to map
+            proto indices, which is more robust and preserves constraint names.
         """
         # Copy counters
         self._constraint_counter = other._constraint_counter
         self._variable_counter = other._variable_counter
         
-        # Clone variables - we need to recreate the variable info with new references
+        # Clone variables by name - create new VariableInfo objects but keep references
+        self._variables = {}
         for var_name, var_info in other._variables.items():
             try:
-                # Try to get the variable from the cloned proto by index
+                # Try to get the corresponding variable from the cloned proto
                 if var_info.var_type in ["IntVar", "BoolVar", "Constant"]:
                     new_var = self.GetIntVarFromProtoIndex(var_info.ortools_var.Index())
                 elif var_info.var_type in ["IntervalVar", "OptionalIntervalVar"]:
                     new_var = self.GetIntervalVarFromProtoIndex(var_info.ortools_var.Index())
                 else:
-                    # Fallback - try to get as IntVar
                     new_var = self.GetIntVarFromProtoIndex(var_info.ortools_var.Index())
                 
-                # Create new VariableInfo
+                # Create new VariableInfo with the new variable reference
                 self._variables[var_name] = VariableInfo(
                     name=var_info.name,
                     var_type=var_info.var_type,
@@ -163,31 +161,35 @@ class EnhancedCpModel(_cp.CpModel):
                     creation_args=var_info.creation_args
                 )
             except (ValueError, AttributeError):
-                # Skip variables that can't be mapped - this can happen with constants
-                # or if the proto structure doesn't match expectations
-                continue
+                # If we can't map the variable, copy the info as-is
+                # This preserves the metadata even if the variable reference might be stale
+                self._variables[var_name] = VariableInfo(
+                    name=var_info.name,
+                    var_type=var_info.var_type,
+                    ortools_var=var_info.ortools_var,  # Keep original reference
+                    creation_args=var_info.creation_args
+                )
         
-        # Clone constraints
+        # Clone constraints by name - create new ConstraintInfo objects
+        self._constraints = {}
         for constraint_name, constraint_info in other._constraints.items():
             try:
-                # Get the new constraint object from the cloned proto
+                # Try to get the corresponding constraint from the cloned proto
                 new_constraint = self.GetConstraintFromProtoIndex(constraint_info.ortools_ct.Index())
                 
-                # Get the new enable variable - it should be in our variables dict
+                # Try to find the enable variable by name
                 enable_var_name = f"_enable_{constraint_name}"
                 new_enable_var = None
+                if enable_var_name in self._variables:
+                    new_enable_var = self._variables[enable_var_name].ortools_var
+                else:
+                    # Fallback: try to get by index
+                    try:
+                        new_enable_var = self.GetIntVarFromProtoIndex(constraint_info.enable_var.Index())
+                    except (ValueError, AttributeError):
+                        new_enable_var = constraint_info.enable_var  # Keep original reference
                 
-                # Find the enable variable in our cloned variables
-                for var_name, var_info in self._variables.items():
-                    if var_name == enable_var_name:
-                        new_enable_var = var_info.ortools_var
-                        break
-                
-                if new_enable_var is None:
-                    # If we can't find the enable variable, skip this constraint
-                    continue
-                
-                # Create new ConstraintInfo
+                # Create new ConstraintInfo with updated references
                 new_constraint_info = ConstraintInfo(
                     name=constraint_info.name,
                     original_args=constraint_info.original_args,
@@ -203,8 +205,21 @@ class EnhancedCpModel(_cp.CpModel):
                 self._constraints[constraint_name] = new_constraint_info
                 
             except (ValueError, AttributeError):
-                # Skip constraints that can't be mapped
-                continue
+                # If we can't map the constraint, copy the info as-is
+                # This preserves the constraint name and metadata even if references might be stale
+                new_constraint_info = ConstraintInfo(
+                    name=constraint_info.name,
+                    original_args=constraint_info.original_args,
+                    constraint_type=constraint_info.constraint_type,
+                    ortools_ct=constraint_info.ortools_ct,  # Keep original reference
+                    enable_var=constraint_info.enable_var,   # Keep original reference
+                )
+                
+                # Copy enabled state and tags
+                new_constraint_info.enabled = constraint_info.enabled
+                new_constraint_info.tags = constraint_info.tags.copy()
+                
+                self._constraints[constraint_name] = new_constraint_info
 
     ###########################################################################
     # Variable Creation - All CP-SAT Variable Types
@@ -1078,6 +1093,7 @@ def example_usage():
     # Print model summary
     print("Model Summary:")
     print(model.summary())
+    print(model.debug_infeasible())
     
     # Disable a constraint and solve
     model.disable_constraint('weighted_sum')

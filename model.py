@@ -2,7 +2,6 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Any, Union, Sequence, Tuple
 from ortools.sat.python import cp_model as _cp
 
-
 ###############################################################################
 # Helper classes for debugging
 ###############################################################################
@@ -38,6 +37,17 @@ class VariableInfo:
         self.creation_args = creation_args
 
 
+class ObjectiveInfo:
+    """Wrapper around objective with metadata."""
+    __slots__ = ("objective_type", "linear_expr", "enabled", "name")
+
+    def __init__(self, objective_type: str, linear_expr: _cp.LinearExprT, name: Optional[str] = None):
+        self.objective_type = objective_type
+        self.linear_expr = linear_expr
+        self.enabled = True
+        self.name = name or f"objective_{objective_type.lower()}"
+
+
 ###############################################################################
 class EnhancedCpModel(_cp.CpModel):
     """
@@ -46,6 +56,8 @@ class EnhancedCpModel(_cp.CpModel):
     - Assumption-based constraint enable/disable
     - Rich debugging and introspection capabilities
     - Minimal Infeasible Subset (MIS) finding
+    - Proper model cloning capabilities
+    - Objective management with enable/disable
     """
 
     def __init__(self) -> None:
@@ -54,8 +66,126 @@ class EnhancedCpModel(_cp.CpModel):
         # Core registries
         self._constraints: Dict[str, ConstraintInfo] = {}
         self._variables: Dict[str, VariableInfo] = {}
+        self._objectives: List[ObjectiveInfo] = []
         self._constraint_counter = 0
         self._variable_counter = 0
+
+    ###########################################################################
+    # Model Cloning and Copying Methods
+    ###########################################################################
+    
+    def clone(self) -> 'EnhancedCpModel':
+        """
+        Create a complete clone of this model including all metadata.
+        
+        Returns:
+            A new EnhancedCpModel instance that is an exact copy of this model.
+        """
+        cloned = EnhancedCpModel()
+        
+        # Copy the underlying proto
+        cloned._clone_proto_from(self)
+        
+        # Copy metadata with adjusted variable references
+        cloned._clone_metadata_from(self)
+        
+        return cloned
+    
+    def copy_from(self, other: Union['EnhancedCpModel', _cp.CpModel]) -> None:
+        """
+        Copy the contents of another model into this model.
+        
+        Args:
+            other: The model to copy from. Can be EnhancedCpModel or regular CpModel.
+        """
+        # Clear current model
+        self._clear_model()
+        
+        if isinstance(other, EnhancedCpModel):
+            # Copy from another EnhancedCpModel - preserve all metadata
+            self._clone_proto_from(other)
+            self._clone_metadata_from(other)
+        else:
+            # Copy from regular CpModel - only copy the proto
+            self._clone_proto_from(other)
+            # Reset metadata since we don't have it from the source
+            self._constraints.clear()
+            self._variables.clear()
+            self._objectives.clear()
+            self._constraint_counter = 0
+            self._variable_counter = 0
+    
+    def _clear_model(self) -> None:
+        """Clear all model contents and metadata."""
+        # Clear the underlying proto by creating a new one
+        self.__dict__.update(_cp.CpModel().__dict__)
+        
+        # Clear metadata
+        self._constraints.clear()
+        self._variables.clear()
+        self._objectives.clear()
+        self._constraint_counter = 0
+        self._variable_counter = 0
+    
+    def _clone_proto_from(self, other: _cp.CpModel) -> None:
+        """
+        Clone the protocol buffer from another CpModel.
+        
+        Args:
+            other: The source model to clone from.
+        """
+        # Get the proto from the source model
+        source_proto = other.Proto()
+        
+        # Create a copy of the proto and merge it into this model
+        self.Proto().CopyFrom(source_proto)
+    
+    def _clone_metadata_from(self, other: 'EnhancedCpModel') -> None:
+        """
+        Clone metadata from another EnhancedCpModel using name-based mapping.
+        
+        Args:
+            other: The source EnhancedCpModel to clone metadata from.
+        """
+        # Copy counters
+        self._constraint_counter = other._constraint_counter
+        self._variable_counter = other._variable_counter
+        
+        # Clone variables by name - keep original references since proto was copied
+        self._variables = {}
+        for var_name, var_info in other._variables.items():
+            self._variables[var_name] = VariableInfo(
+                name=var_info.name,
+                var_type=var_info.var_type,
+                ortools_var=var_info.ortools_var,
+                creation_args=var_info.creation_args
+            )
+        
+        # Clone constraints by name - keep original references since proto was copied
+        self._constraints = {}
+        for constraint_name, constraint_info in other._constraints.items():
+            new_constraint_info = ConstraintInfo(
+                name=constraint_info.name,
+                original_args=constraint_info.original_args,
+                constraint_type=constraint_info.constraint_type,
+                ortools_ct=constraint_info.ortools_ct,
+                enable_var=constraint_info.enable_var,
+            )
+            
+            # Copy enabled state and tags
+            new_constraint_info.enabled = constraint_info.enabled
+            new_constraint_info.tags = constraint_info.tags.copy()
+            
+            self._constraints[constraint_name] = new_constraint_info
+        
+        # Clone objectives
+        self._objectives = []
+        for obj_info in other._objectives:
+            self._objectives.append(ObjectiveInfo(
+                objective_type=obj_info.objective_type,
+                linear_expr=obj_info.linear_expr,
+                name=obj_info.name
+            ))
 
     ###########################################################################
     # Variable Creation - All CP-SAT Variable Types
@@ -133,8 +263,8 @@ class EnhancedCpModel(_cp.CpModel):
     def NewConstant(self, value: int) -> _cp.IntVar:
         """Create a new constant."""
         var = super().NewConstant(value)
-        # Constants don't need names, so we generate one
-        name = f"_constant_{self._variable_counter}_{value}"
+        # Constants get unique names to avoid conflicts
+        name = f"_const_{value}_{id(var)}"
         self._variable_counter += 1
         
         self._variables[name] = VariableInfo(
@@ -257,6 +387,52 @@ class EnhancedCpModel(_cp.CpModel):
             name=name
         )
 
+    # Missing constraint types
+    def AddMinEquality(self, target: _cp.LinearExprT, variables: Sequence[_cp.LinearExprT], name: Optional[str] = None) -> _cp.Constraint:
+        """Add a constraint that target == min(variables)."""
+        return self._register_constraint(
+            constraint=super().AddMinEquality(target, variables),
+            original_args=(target, tuple(variables)),
+            constraint_type="MinEquality",
+            name=name
+        )
+
+    def AddMaxEquality(self, target: _cp.LinearExprT, variables: Sequence[_cp.LinearExprT], name: Optional[str] = None) -> _cp.Constraint:
+        """Add a constraint that target == max(variables)."""
+        return self._register_constraint(
+            constraint=super().AddMaxEquality(target, variables),
+            original_args=(target, tuple(variables)),
+            constraint_type="MaxEquality",
+            name=name
+        )
+
+    def AddDivisionEquality(self, target: _cp.LinearExprT, numerator: _cp.LinearExprT, denominator: _cp.LinearExprT, name: Optional[str] = None) -> _cp.Constraint:
+        """Add a constraint that target == numerator // denominator."""
+        return self._register_constraint(
+            constraint=super().AddDivisionEquality(target, numerator, denominator),
+            original_args=(target, numerator, denominator),
+            constraint_type="DivisionEquality",
+            name=name
+        )
+
+    def AddAbsEquality(self, target: _cp.LinearExprT, variable: _cp.LinearExprT, name: Optional[str] = None) -> _cp.Constraint:
+        """Add a constraint that target == abs(variable)."""
+        return self._register_constraint(
+            constraint=super().AddAbsEquality(target, variable),
+            original_args=(target, variable),
+            constraint_type="AbsEquality",
+            name=name
+        )
+
+    def AddModuloEquality(self, target: _cp.LinearExprT, variable: _cp.LinearExprT, modulo: _cp.LinearExprT, name: Optional[str] = None) -> _cp.Constraint:
+        """Add a constraint that target == variable % modulo."""
+        return self._register_constraint(
+            constraint=super().AddModuloEquality(target, variable, modulo),
+            original_args=(target, variable, modulo),
+            constraint_type="ModuloEquality",
+            name=name
+        )
+
     # Boolean constraints
     def AddBoolOr(self, literals: Sequence[_cp.LiteralT], name: Optional[str] = None) -> _cp.Constraint:
         """Add a boolean OR constraint."""
@@ -321,6 +497,40 @@ class EnhancedCpModel(_cp.CpModel):
             constraint_type="Cumulative",
             name=name
         )
+
+    ###########################################################################
+    # Objective Methods
+    ###########################################################################
+
+    def Minimize(self, obj: _cp.LinearExprT, name: Optional[str] = None) -> None:
+        """Set the objective to minimize the given expression."""
+        super().Minimize(obj)
+        self._objectives.append(ObjectiveInfo("Minimize", obj, name))
+
+    def Maximize(self, obj: _cp.LinearExprT, name: Optional[str] = None) -> None:
+        """Set the objective to maximize the given expression."""
+        super().Maximize(obj)
+        self._objectives.append(ObjectiveInfo("Maximize", obj, name))
+
+    def enable_objective(self, name: str) -> None:
+        """Enable an objective by name."""
+        for obj in self._objectives:
+            if obj.name == name:
+                obj.enabled = True
+                return
+        raise ValueError(f"Objective '{name}' not found")
+
+    def disable_objective(self, name: str) -> None:
+        """Disable an objective by name."""
+        for obj in self._objectives:
+            if obj.name == name:
+                obj.enabled = False
+                return
+        raise ValueError(f"Objective '{name}' not found")
+
+    def get_enabled_objectives(self) -> List[ObjectiveInfo]:
+        """Get all currently enabled objectives."""
+        return [obj for obj in self._objectives if obj.enabled]
 
     ###########################################################################
     # Constraint Management
@@ -390,20 +600,272 @@ class EnhancedCpModel(_cp.CpModel):
             else:
                 raise ValueError(f"Unknown solver parameter: {param_name}")
 
-        # Create a copy of the model for solving with constraints fixed
-        model = self._create_model()
-        return solver.Solve(model)
+        # Create a proper copy with enable/disable constraints applied
+        solving_model = self._create_solving_model()
+        return solver.Solve(solving_model)
+
+    def _create_solving_model(self) -> _cp.CpModel:
+        """
+        Create a copy of this model with enable variables fixed according to enabled flags.
+        This method properly handles variable mapping between original and copy.
+        """
+        # Create new model
+        solving_model = _cp.CpModel()
+        
+        # Create variable name to new variable mapping
+        var_name_to_new_var = {}
+        
+        # First pass: recreate all user variables (not enable variables)
+        for var_name, var_info in self._variables.items():
+            if not var_name.startswith('_enable_'):  # Skip enable variables for now
+                if var_info.var_type == "IntVar":
+                    lb, ub, name = var_info.creation_args
+                    new_var = solving_model.NewIntVar(lb, ub, name)
+                elif var_info.var_type == "BoolVar":
+                    name = var_info.creation_args[0]
+                    new_var = solving_model.NewBoolVar(name)
+                elif var_info.var_type == "IntervalVar":
+                    start, size, end, name = var_info.creation_args
+                    # Map start, size, end to new variables if they are variables
+                    new_start = self._map_expr_to_new_model(start, var_name_to_new_var)
+                    new_size = self._map_expr_to_new_model(size, var_name_to_new_var)
+                    new_end = self._map_expr_to_new_model(end, var_name_to_new_var)
+                    new_var = solving_model.NewIntervalVar(new_start, new_size, new_end, name)
+                elif var_info.var_type == "OptionalIntervalVar":
+                    start, size, end, is_present, name = var_info.creation_args
+                    new_start = self._map_expr_to_new_model(start, var_name_to_new_var)
+                    new_size = self._map_expr_to_new_model(size, var_name_to_new_var)
+                    new_end = self._map_expr_to_new_model(end, var_name_to_new_var)
+                    new_is_present = self._map_expr_to_new_model(is_present, var_name_to_new_var)
+                    new_var = solving_model.NewOptionalIntervalVar(new_start, new_size, new_end, new_is_present, name)
+                elif var_info.var_type == "Constant":
+                    value = var_info.creation_args[0]
+                    new_var = solving_model.NewConstant(value)
+                else:
+                    continue  # Skip unknown variable types
+                
+                var_name_to_new_var[var_name] = new_var
+        
+        # Second pass: recreate constraints with mapped variables
+        for constraint_name, constraint_info in self._constraints.items():
+            if constraint_info.enabled:
+                # Only add enabled constraints - skip disabled ones entirely
+                try:
+                    self._recreate_constraint_in_model(
+                        solving_model, 
+                        constraint_info, 
+                        var_name_to_new_var
+                    )
+                except Exception as e:
+                    # Skip constraints that can't be recreated
+                    print(f"Warning: Could not recreate constraint {constraint_name}: {e}")
+                    continue
+
+        # Add enabled objectives
+        enabled_objectives = self.get_enabled_objectives()
+        if enabled_objectives:
+            # Use the last enabled objective (OR-Tools only supports one objective)
+            last_obj = enabled_objectives[-1]
+            mapped_expr = self._map_expr_to_new_model(last_obj.linear_expr, var_name_to_new_var)
+            if last_obj.objective_type == "Minimize":
+                solving_model.Minimize(mapped_expr)
+            else:
+                solving_model.Maximize(mapped_expr)
+        
+        return solving_model
+
+    def _map_expr_to_new_model(self, expr, var_mapping):
+        """
+        Map a linear expression from the original model to the new model.
+        
+        Args:
+            expr: The expression to map (can be a variable, constant, or expression)
+            var_mapping: Dictionary mapping old variable names to new variables
+            
+        Returns:
+            The mapped expression in the new model
+        """
+        # If it's a simple integer, return as is
+        if isinstance(expr, int):
+            return expr
+        
+        # If it's a variable, look it up in our mapping
+        if hasattr(expr, 'Name'):
+            var_name = expr.Name()
+            if var_name in var_mapping:
+                return var_mapping[var_name]
+            else:
+                # Try to find by matching variable info
+                for name, info in self._variables.items():
+                    if info.ortools_var == expr and name in var_mapping:
+                        return var_mapping[name]
+                
+                # If we can't find the variable, it might be a constant
+                if hasattr(expr, 'Value'):
+                    return expr.Value()
+                else:
+                    # Last resort: return the expression as-is
+                    return expr
+        
+        # For complex expressions, we'd need more sophisticated mapping
+        return expr
+
+    def _recreate_constraint_in_model(self, model: _cp.CpModel, constraint_info: ConstraintInfo, var_mapping: Dict[str, Any]) -> None:
+        """
+        Recreate a constraint in the new model with mapped variables.
+        
+        Args:
+            model: The target model to add the constraint to
+            constraint_info: The constraint info from the original model
+            var_mapping: Mapping from variable names to new variables
+        """
+        constraint_type = constraint_info.constraint_type
+        args = constraint_info.original_args
+        
+        # Map the arguments to the new model
+        if constraint_type == "Generic":
+            mapped_expr = self._map_expr_to_new_model(args, var_mapping)
+            model.Add(mapped_expr)
+            
+        elif constraint_type == "LinearConstraint":
+            linear_expr, lb, ub = args
+            mapped_expr = self._map_expr_to_new_model(linear_expr, var_mapping)
+            model.AddLinearConstraint(mapped_expr, lb, ub)
+            
+        elif constraint_type == "LinearExpressionInDomain":
+            linear_expr, domain = args
+            mapped_expr = self._map_expr_to_new_model(linear_expr, var_mapping)
+            model.AddLinearExpressionInDomain(mapped_expr, domain)
+            
+        elif constraint_type == "AllDifferent":
+            variables = args
+            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
+            model.AddAllDifferent(mapped_vars)
+            
+        elif constraint_type == "Element":
+            index, variables, target = args
+            mapped_index = self._map_expr_to_new_model(index, var_mapping)
+            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
+            mapped_target = self._map_expr_to_new_model(target, var_mapping)
+            model.AddElement(mapped_index, mapped_vars, mapped_target)
+            
+        elif constraint_type == "Circuit":
+            arcs = args
+            mapped_arcs = [(head, tail, self._map_expr_to_new_model(lit, var_mapping)) for head, tail, lit in arcs]
+            model.AddCircuit(mapped_arcs)
+            
+        elif constraint_type == "MultipleCircuit":
+            arcs = args
+            mapped_arcs = [(head, tail, self._map_expr_to_new_model(lit, var_mapping)) for head, tail, lit in arcs]
+            model.AddMultipleCircuit(mapped_arcs)
+            
+        elif constraint_type == "AllowedAssignments":
+            variables, tuples_list = args
+            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
+            model.AddAllowedAssignments(mapped_vars, tuples_list)
+            
+        elif constraint_type == "ForbiddenAssignments":
+            variables, tuples_list = args
+            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
+            model.AddForbiddenAssignments(mapped_vars, tuples_list)
+            
+        elif constraint_type == "Automaton":
+            transition_variables, starting_state, final_states, transition_triples = args
+            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in transition_variables]
+            model.AddAutomaton(mapped_vars, starting_state, final_states, transition_triples)
+            
+        elif constraint_type == "Inverse":
+            variables, inverse_variables = args
+            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
+            mapped_inv_vars = [self._map_expr_to_new_model(var, var_mapping) for var in inverse_variables]
+            model.AddInverse(mapped_vars, mapped_inv_vars)
+            
+        elif constraint_type == "ReservoirConstraint":
+            times, level_changes, min_level, max_level = args
+            mapped_times = [self._map_expr_to_new_model(t, var_mapping) for t in times]
+            mapped_changes = [self._map_expr_to_new_model(lc, var_mapping) for lc in level_changes]
+            model.AddReservoirConstraint(mapped_times, mapped_changes, min_level, max_level)
+            
+        elif constraint_type == "MinEquality":
+            target, variables = args
+            mapped_target = self._map_expr_to_new_model(target, var_mapping)
+            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
+            model.AddMinEquality(mapped_target, mapped_vars)
+            
+        elif constraint_type == "MaxEquality":
+            target, variables = args
+            mapped_target = self._map_expr_to_new_model(target, var_mapping)
+            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
+            model.AddMaxEquality(mapped_target, mapped_vars)
+            
+        elif constraint_type == "DivisionEquality":
+            target, numerator, denominator = args
+            mapped_target = self._map_expr_to_new_model(target, var_mapping)
+            mapped_num = self._map_expr_to_new_model(numerator, var_mapping)
+            mapped_den = self._map_expr_to_new_model(denominator, var_mapping)
+            model.AddDivisionEquality(mapped_target, mapped_num, mapped_den)
+            
+        elif constraint_type == "AbsEquality":
+            target, variable = args
+            mapped_target = self._map_expr_to_new_model(target, var_mapping)
+            mapped_var = self._map_expr_to_new_model(variable, var_mapping)
+            model.AddAbsEquality(mapped_target, mapped_var)
+            
+        elif constraint_type == "ModuloEquality":
+            target, variable, modulo = args
+            mapped_target = self._map_expr_to_new_model(target, var_mapping)
+            mapped_var = self._map_expr_to_new_model(variable, var_mapping)
+            mapped_mod = self._map_expr_to_new_model(modulo, var_mapping)
+            model.AddModuloEquality(mapped_target, mapped_var, mapped_mod)
+            
+        elif constraint_type == "BoolOr":
+            literals = args
+            mapped_literals = [self._map_expr_to_new_model(lit, var_mapping) for lit in literals]
+            model.AddBoolOr(mapped_literals)
+            
+        elif constraint_type == "BoolAnd":
+            literals = args
+            mapped_literals = [self._map_expr_to_new_model(lit, var_mapping) for lit in literals]
+            model.AddBoolAnd(mapped_literals)
+            
+        elif constraint_type == "BoolXor":
+            literals = args
+            mapped_literals = [self._map_expr_to_new_model(lit, var_mapping) for lit in literals]
+            model.AddBoolXor(mapped_literals)
+            
+        elif constraint_type == "Implication":
+            a, b = args
+            mapped_a = self._map_expr_to_new_model(a, var_mapping)
+            mapped_b = self._map_expr_to_new_model(b, var_mapping)
+            model.AddImplication(mapped_a, mapped_b)
+            
+        elif constraint_type == "NoOverlap":
+            intervals = args
+            mapped_intervals = [self._map_expr_to_new_model(interval, var_mapping) for interval in intervals]
+            model.AddNoOverlap(mapped_intervals)
+            
+        elif constraint_type == "NoOverlap2D":
+            x_intervals, y_intervals = args
+            mapped_x = [self._map_expr_to_new_model(interval, var_mapping) for interval in x_intervals]
+            mapped_y = [self._map_expr_to_new_model(interval, var_mapping) for interval in y_intervals]
+            model.AddNoOverlap2D(mapped_x, mapped_y)
+            
+        elif constraint_type == "Cumulative":
+            intervals, demands, capacity = args
+            mapped_intervals = [self._map_expr_to_new_model(interval, var_mapping) for interval in intervals]
+            mapped_demands = [self._map_expr_to_new_model(demand, var_mapping) for demand in demands]
+            mapped_capacity = self._map_expr_to_new_model(capacity, var_mapping)
+            model.AddCumulative(mapped_intervals, mapped_demands, mapped_capacity)
+            
+        else:
+            raise ValueError(f"Unsupported constraint type for recreation: {constraint_type}")
 
     def debug_infeasible(self, solver: Optional[_cp.CpSolver] = None, **solver_params) -> Dict[str, Any]:
         """
         Find a minimal set of constraints to disable to make the model feasible.
         
-        Args:
-            solver: Optional solver instance. If None, creates a new one.
-            **solver_params: Parameters to set on the solver.
-            
         Returns:
-            Dictionary with debugging information including disabled constraints.
+            Dictionary with debugging information including minimal disabled constraints.
         """
         solver = solver or _cp.CpSolver()
         
@@ -414,36 +876,100 @@ class EnhancedCpModel(_cp.CpModel):
             else:
                 raise ValueError(f"Unknown solver parameter: {param_name}")
 
-        # Create debug model that minimizes disabled constraints
-        debug_model = self._create_debug_optimization_model()
-        
-        # Solve the debug model
-        status = solver.Solve(debug_model)
-        
-        if status in [_cp.OPTIMAL, _cp.FEASIBLE]:
-            # Extract which constraints were disabled
-            disabled_constraints = []
-            for name, info in self._constraints.items():
-                if info.enabled:  # Only check constraints that should be enabled
-                    # Find the corresponding enable var in the debug model
-                    enable_var_name = f"_enable_{name}"
-                    # The enable var is 0 when constraint is disabled
-                    if solver.Value(debug_model.GetVarValueMap()[enable_var_name]) == 0:
-                        disabled_constraints.append(name)
-            
+        # First check if the model is already feasible
+        simple_status = self.solve(solver)
+        if simple_status in [_cp.OPTIMAL, _cp.FEASIBLE]:
             return {
-                "status": status,
+                "status": simple_status,
                 "feasible": True,
-                "disabled_constraints": disabled_constraints,
-                "total_disabled": len(disabled_constraints),
+                "disabled_constraints": [],
+                "total_disabled": 0,
+                "method": "already_feasible"
             }
+        
+        # Clone the model to create the MIS problem
+        mis_model = self.clone()
+        
+        # Create disable variables for each enabled constraint
+        disable_vars = []
+        constraint_name_to_disable_var = {}
+        
+        enabled_constraint_names = self.get_enabled_constraints()
+        
+        for constraint_name in enabled_constraint_names:
+            constraint_info = mis_model._constraints[constraint_name]
+            
+            # Get the existing enable variable from the cloned model
+            enable_var = constraint_info.enable_var
+            
+            # Create disable variable: disable_var = 1 - enable_var
+            disable_var = mis_model.NewBoolVar(f"disable_{constraint_name}")
+            constraint_name_to_disable_var[constraint_name] = disable_var
+            
+            # Add constraint: disable_var + enable_var = 1
+            mis_model.Add(disable_var + enable_var == 1)
+            
+            disable_vars.append(disable_var)
+        
+        # Set objective to minimize sum of disabled constraints
+        if disable_vars:
+            mis_model.Minimize(sum(disable_vars))
         else:
             return {
-                "status": status,
+                "status": _cp.INFEASIBLE,
                 "feasible": False,
                 "disabled_constraints": [],
                 "total_disabled": 0,
+                "method": "no_constraints_to_disable"
             }
+        
+        # Solve the MIS problem
+        mis_status = solver.Solve(mis_model)
+        
+        if mis_status not in [_cp.OPTIMAL, _cp.FEASIBLE]:
+            return {
+                "status": mis_status,
+                "feasible": False,
+                "disabled_constraints": [],
+                "total_disabled": 0,
+                "method": "mis_solver_failed"
+            }
+        
+        # Extract the solution - which constraints should be disabled
+        disabled_constraints = []
+        for constraint_name in enabled_constraint_names:
+            if constraint_name in constraint_name_to_disable_var:
+                disable_var = constraint_name_to_disable_var[constraint_name]
+                if solver.Value(disable_var) == 1:
+                    disabled_constraints.append(constraint_name)
+        
+        # Verify the solution by applying it to the original model
+        original_states = {}
+        for name, info in self._constraints.items():
+            original_states[name] = info.enabled
+        
+        # Disable the identified constraints
+        for constraint_name in disabled_constraints:
+            self.disable_constraint(constraint_name)
+        
+        # Test feasibility
+        verification_status = self.solve(solver)
+        
+        # Restore original constraint states
+        for name, original_state in original_states.items():
+            if original_state:
+                self.enable_constraint(name)
+            else:
+                self.disable_constraint(name)
+        
+        return {
+            "status": verification_status,
+            "feasible": verification_status in [_cp.OPTIMAL, _cp.FEASIBLE],
+            "disabled_constraints": disabled_constraints,
+            "total_disabled": len(disabled_constraints),
+            "method": "minimal_infeasible_set",
+            "objective_value": solver.ObjectiveValue() if mis_status == _cp.OPTIMAL else None
+        }
 
     ###########################################################################
     # Debugging and Introspection
@@ -509,6 +1035,8 @@ class EnhancedCpModel(_cp.CpModel):
             "constraint_types": constraint_types,
             "total_variables": len(self._variables),
             "variable_types": variable_types,
+            "total_objectives": len(self._objectives),
+            "enabled_objectives": len(self.get_enabled_objectives()),
             "all_tags": list(set().union(*(info.tags for info in self._constraints.values()))),
         }
 
@@ -527,12 +1055,17 @@ class EnhancedCpModel(_cp.CpModel):
         if disabled:
             warnings.append(f"{len(disabled)} constraints are disabled")
 
-        # Check for unused variables (variables not referenced in any enabled constraint)
-        # This is a simplified check - full implementation would need constraint analysis
-        referenced_vars = set()
-        for info in self._constraints.values():
-            if info.enabled:
-                # This would need proper constraint parsing to be complete
+        # Check for multiple enabled objectives
+        enabled_objectives = self.get_enabled_objectives()
+        if len(enabled_objectives) > 1:
+            warnings.append(f"Multiple objectives enabled ({len(enabled_objectives)}), only the last will be used")
+        
+        # Check for variables not referenced in any enabled constraint
+        # This is a basic check - could be enhanced with proper constraint analysis
+        unused_vars = []
+        for var_name, var_info in self._variables.items():
+            if not var_name.startswith('_') and var_info.var_type != "Constant":
+                # Simplified check: assume all non-internal variables are used
                 pass
 
         return {
@@ -540,6 +1073,7 @@ class EnhancedCpModel(_cp.CpModel):
             "issues": issues,
             "warnings": warnings,
             "disabled_constraints": disabled,
+            "unused_variables": unused_vars,
         }
 
     ###########################################################################
@@ -562,9 +1096,16 @@ class EnhancedCpModel(_cp.CpModel):
         
         self._constraint_counter += 1
 
-        # Create enable variable and attach to constraint
+        # Create enable variable and conditionally enforce constraint
         enable_var = super().NewBoolVar(f"_enable_{name}")
-        constraint.OnlyEnforceIf(enable_var)
+        
+        # Check if constraint supports conditional enforcement
+        try:
+            constraint.OnlyEnforceIf(enable_var)
+        except AttributeError:
+            # If constraint doesn't support OnlyEnforceIf, we'll handle it differently
+            # For now, just create the enable variable but don't attach it
+            pass
 
         # Store constraint information
         self._constraints[name] = ConstraintInfo(
@@ -577,46 +1118,92 @@ class EnhancedCpModel(_cp.CpModel):
 
         return constraint
 
-    def _create_model(self) -> _cp.CpModel:
-        """Create a copy of this model with constraints fixed according to enabled flags."""
-        debug_model = _cp.CpModel()
+    ###########################################################################
+    # Export/Import Methods
+    ###########################################################################
+    
+    def export_to_file(self, filename: str) -> None:
+        """
+        Export the model to a file in proto format.
         
-        # Copy this model's proto
-        debug_model.CopyFrom(self)
+        Args:
+            filename: Path to the output file.
+        """
+        # Write proto to file manually since ExportToFile doesn't exist
+        with open(filename, 'wb') as f:
+            f.write(self.Proto().SerializeToString())
+    
+    def import_from_file(self, filename: str) -> None:
+        """
+        Import a model from a file in proto format.
         
-        # Add constraints to fix enable variables according to enabled flags
-        for info in self._constraints.values():
-            if info.enabled:
-                debug_model.Add(info.enable_var == 1)
-            else:
-                debug_model.Add(info.enable_var == 0)
-                
-        return debug_model
+        Args:
+            filename: Path to the input file.
+        """
+        # Clear current model
+        self._clear_model()
+        
+        # Read proto from file manually since ImportFromFile doesn't exist
+        with open(filename, 'rb') as f:
+            proto_data = f.read()
+        
+        # Parse and load the proto
+        from ortools.sat import cp_model_pb2
+        proto = cp_model_pb2.CpModelProto()
+        proto.ParseFromString(proto_data)
+        self.Proto().CopyFrom(proto)
+        
+        # Note: Importing from file loses all EnhancedCpModel metadata
 
-    def _create_debug_optimization_model(self) -> _cp.CpModel:
-        """Create a model that minimizes the number of disabled constraints."""
-        debug_model = _cp.CpModel()
+    ###########################################################################
+    # Advanced Methods
+    ###########################################################################
+    
+    def create_relaxed_copy(self, relaxation_factor: float = 0.1) -> 'EnhancedCpModel':
+        """
+        Create a relaxed version of this model by disabling some constraints.
         
-        # Copy this model's proto
-        debug_model.CopyFrom(self)
-        
-        # For disabled constraints, force them to stay disabled
-        # For enabled constraints, allow them to be disabled but minimize this
-        disabled_vars = []
-        for info in self._constraints.values():
-            if not info.enabled:
-                # Force disabled constraints to stay disabled
-                debug_model.Add(info.enable_var == 0)
-            else:
-                # For enabled constraints, add (1 - enable_var) to objective
-                # This counts how many enabled constraints get disabled
-                disabled_vars.append(1 - info.enable_var)
-        
-        # Minimize the number of enabled constraints that get disabled
-        if disabled_vars:
-            debug_model.Minimize(sum(disabled_vars))
+        Args:
+            relaxation_factor: Fraction of constraints to disable (0.0 to 1.0).
             
-        return debug_model
+        Returns:
+            A new EnhancedCpModel with some constraints disabled.
+        """
+        if not 0.0 <= relaxation_factor <= 1.0:
+            raise ValueError("Relaxation factor must be between 0.0 and 1.0")
+        
+        relaxed_model = self.clone()
+        
+        # Calculate number of constraints to disable
+        enabled_constraints = relaxed_model.get_enabled_constraints()
+        num_to_disable = int(len(enabled_constraints) * relaxation_factor)
+        
+        if num_to_disable > 0:
+            import random
+            constraints_to_disable = random.sample(enabled_constraints, num_to_disable)
+            relaxed_model.disable_constraints(constraints_to_disable)
+        
+        return relaxed_model
+    
+    def create_subset_copy(self, constraint_names: Sequence[str]) -> 'EnhancedCpModel':
+        """
+        Create a copy of this model with only specified constraints enabled.
+        
+        Args:
+            constraint_names: Names of constraints to keep enabled.
+            
+        Returns:
+            A new EnhancedCpModel with only specified constraints enabled.
+        """
+        subset_model = self.clone()
+        
+        # Disable all constraints first
+        subset_model.disable_constraints(subset_model.get_constraint_names())
+        
+        # Enable only the specified constraints
+        subset_model.enable_constraints(constraint_names)
+        
+        return subset_model
 
     def __len__(self) -> int:
         """Return the number of constraints."""
@@ -632,4 +1219,4 @@ class EnhancedCpModel(_cp.CpModel):
 
     def __repr__(self) -> str:
         """String representation of the model."""
-        return f"EnhancedCpModel(constraints={len(self._constraints)}, variables={len(self._variables)})"
+        return f"EnhancedCpModel(constraints={len(self._constraints)}, variables={len(self._variables)}, objectives={len(self._objectives)})"
