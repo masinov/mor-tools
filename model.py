@@ -1,273 +1,635 @@
-from ortools.sat.python import cp_model
-from typing import Dict, List, Optional, Any
+from __future__ import annotations
+from typing import Dict, List, Optional, Any, Union, Sequence, Tuple
+from ortools.sat.python import cp_model as _cp
 
-class EnhancedCpModel(cp_model.CpModel):
+
+###############################################################################
+# Helper classes for debugging
+###############################################################################
+class ConstraintInfo:
+    """Rich wrapper around a single constraint with debugging metadata."""
+    __slots__ = ("name", "original_args", "constraint_type", "ortools_ct", "enable_var", "enabled", "tags")
+
+    def __init__(
+        self,
+        name: str,
+        original_args: Any,
+        constraint_type: str,
+        ortools_ct: _cp.Constraint,
+        enable_var: _cp.IntVar,
+    ):
+        self.name = name
+        self.original_args = original_args
+        self.constraint_type = constraint_type
+        self.ortools_ct = ortools_ct
+        self.enable_var = enable_var
+        self.enabled = True
+        self.tags: set[str] = set()
+
+
+class VariableInfo:
+    """Rich wrapper around variables with metadata."""
+    __slots__ = ("name", "var_type", "ortools_var", "creation_args")
+
+    def __init__(self, name: str, var_type: str, ortools_var: Union[_cp.IntVar, _cp.IntervalVar], creation_args: tuple):
+        self.name = name
+        self.var_type = var_type
+        self.ortools_var = ortools_var
+        self.creation_args = creation_args
+
+
+###############################################################################
+class EnhancedCpModel(_cp.CpModel):
     """
-    Enhanced CP-SAT model that extends CpModel with:
-      - Constraint registration, enabling/disabling
-      - Named objectives and switching
-      - Submodel support (with context manager)
-      - Debug solver for minimal infeasibility analysis
-
-    NOTE:
-        The built-in `_debug_solver` is **only for debugging**.
-        Use your own CpSolver instance for normal solving.
+    Drop-in replacement for CpModel that provides:
+    - Complete constraint and variable registration
+    - Assumption-based constraint enable/disable
+    - Rich debugging and introspection capabilities
+    - Minimal Infeasible Subset (MIS) finding
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
-
-        # Debug-only solver
-        self._debug_solver = cp_model.CpSolver()
-
-        # Constraint registry: id -> {name, enable_var, constraint, ortools_constraint, enabled}
-        self._constraint_registry: Dict[str, Dict] = {}
+        
+        # Core registries
+        self._constraints: Dict[str, ConstraintInfo] = {}
+        self._variables: Dict[str, VariableInfo] = {}
         self._constraint_counter = 0
-        self._constraint_names: set = set()
+        self._variable_counter = 0
 
-        # Objectives: name -> {expression, is_minimization}
-        self._objectives: Dict[str, Dict] = {}
-        self._objective_counter = 0
-        self._objective_names: set = set()
-
-        # Variable registry: name -> variable object
-        self._variables: Dict[str, Any] = {}
-
-        # Submodels: name -> constraint_names
-        self._submodels: Dict[str, List[str]] = {}
-        self._active_submodel: Optional[str] = None
-
-    # -------------------------------
-    # Variable registration
-    # -------------------------------
-    def NewIntVar(self, lb, ub, name: str):
+    ###########################################################################
+    # Variable Creation - All CP-SAT Variable Types
+    ###########################################################################
+    
+    def NewIntVar(self, lb: int, ub: int, name: str) -> _cp.IntVar:
+        """Create a new integer variable with bounds [lb, ub]."""
+        if name in self._variables:
+            raise ValueError(f"Variable name '{name}' already exists")
+        
         var = super().NewIntVar(lb, ub, name)
-        self._variables[name] = var
+        self._variables[name] = VariableInfo(
+            name=name,
+            var_type="IntVar",
+            ortools_var=var,
+            creation_args=(lb, ub, name)
+        )
         return var
 
-    def NewBoolVar(self, name: str):
+    def NewBoolVar(self, name: str) -> _cp.IntVar:
+        """Create a new boolean variable."""
+        if name in self._variables:
+            raise ValueError(f"Variable name '{name}' already exists")
+        
         var = super().NewBoolVar(name)
-        self._variables[name] = var
+        self._variables[name] = VariableInfo(
+            name=name,
+            var_type="BoolVar",
+            ortools_var=var,
+            creation_args=(name,)
+        )
         return var
 
-    # -------------------------------
-    # Constraint management
-    # -------------------------------
-    def Add(self, constraint, name: Optional[str] = None) -> cp_model.Constraint:
+    def NewIntervalVar(
+        self,
+        start: _cp.LinearExprT,
+        size: _cp.LinearExprT,
+        end: _cp.LinearExprT,
+        name: str,
+    ) -> _cp.IntervalVar:
+        """Create a new interval variable."""
+        if name in self._variables:
+            raise ValueError(f"Variable name '{name}' already exists")
+        
+        var = super().NewIntervalVar(start, size, end, name)
+        self._variables[name] = VariableInfo(
+            name=name,
+            var_type="IntervalVar",
+            ortools_var=var,
+            creation_args=(start, size, end, name)
+        )
+        return var
+
+    def NewOptionalIntervalVar(
+        self,
+        start: _cp.LinearExprT,
+        size: _cp.LinearExprT,
+        end: _cp.LinearExprT,
+        is_present: _cp.LiteralT,
+        name: str,
+    ) -> _cp.IntervalVar:
+        """Create a new optional interval variable."""
+        if name in self._variables:
+            raise ValueError(f"Variable name '{name}' already exists")
+        
+        var = super().NewOptionalIntervalVar(start, size, end, is_present, name)
+        self._variables[name] = VariableInfo(
+            name=name,
+            var_type="OptionalIntervalVar",
+            ortools_var=var,
+            creation_args=(start, size, end, is_present, name)
+        )
+        return var
+
+    def NewConstant(self, value: int) -> _cp.IntVar:
+        """Create a new constant."""
+        var = super().NewConstant(value)
+        # Constants don't need names, so we generate one
+        name = f"_constant_{self._variable_counter}_{value}"
+        self._variable_counter += 1
+        
+        self._variables[name] = VariableInfo(
+            name=name,
+            var_type="Constant",
+            ortools_var=var,
+            creation_args=(value,)
+        )
+        return var
+
+    ###########################################################################
+    # Constraint Creation - All CP-SAT Constraint Types
+    ###########################################################################
+
+    def Add(self, ct, name: Optional[str] = None) -> _cp.Constraint:
+        """Add a generic constraint."""
+        return self._register_constraint(
+            constraint=super().Add(ct),
+            original_args=ct,
+            constraint_type="Generic",
+            name=name
+        )
+
+    def AddLinearConstraint(self, linear_expr, lb: int, ub: int, name: Optional[str] = None) -> _cp.Constraint:
+        """Add a linear constraint lb <= linear_expr <= ub."""
+        return self._register_constraint(
+            constraint=super().AddLinearConstraint(linear_expr, lb, ub),
+            original_args=(linear_expr, lb, ub),
+            constraint_type="LinearConstraint",
+            name=name
+        )
+
+    def AddLinearExpressionInDomain(self, linear_expr, domain: _cp.Domain, name: Optional[str] = None) -> _cp.Constraint:
+        """Add a constraint that linear_expr is in domain."""
+        return self._register_constraint(
+            constraint=super().AddLinearExpressionInDomain(linear_expr, domain),
+            original_args=(linear_expr, domain),
+            constraint_type="LinearExpressionInDomain",
+            name=name
+        )
+
+    def AddAllDifferent(self, variables: Sequence[_cp.LinearExprT], name: Optional[str] = None) -> _cp.Constraint:
+        """Add an all different constraint."""
+        return self._register_constraint(
+            constraint=super().AddAllDifferent(variables),
+            original_args=tuple(variables),
+            constraint_type="AllDifferent",
+            name=name
+        )
+
+    def AddElement(self, index: _cp.LinearExprT, variables: Sequence[_cp.LinearExprT], target: _cp.LinearExprT, name: Optional[str] = None) -> _cp.Constraint:
+        """Add an element constraint: variables[index] == target."""
+        return self._register_constraint(
+            constraint=super().AddElement(index, variables, target),
+            original_args=(index, tuple(variables), target),
+            constraint_type="Element",
+            name=name
+        )
+
+    def AddCircuit(self, arcs: Sequence[Tuple[int, int, _cp.LiteralT]], name: Optional[str] = None) -> _cp.Constraint:
+        """Add a circuit constraint."""
+        return self._register_constraint(
+            constraint=super().AddCircuit(arcs),
+            original_args=tuple(arcs),
+            constraint_type="Circuit",
+            name=name
+        )
+
+    def AddMultipleCircuit(self, arcs: Sequence[Tuple[int, int, _cp.LiteralT]], name: Optional[str] = None) -> _cp.Constraint:
+        """Add a multiple circuit constraint."""
+        return self._register_constraint(
+            constraint=super().AddMultipleCircuit(arcs),
+            original_args=tuple(arcs),
+            constraint_type="MultipleCircuit",
+            name=name
+        )
+
+    def AddAllowedAssignments(self, variables: Sequence[_cp.IntVar], tuples_list: Sequence[Sequence[int]], name: Optional[str] = None) -> _cp.Constraint:
+        """Add an allowed assignments constraint."""
+        return self._register_constraint(
+            constraint=super().AddAllowedAssignments(variables, tuples_list),
+            original_args=(tuple(variables), tuple(tuple(t) for t in tuples_list)),
+            constraint_type="AllowedAssignments",
+            name=name
+        )
+
+    def AddForbiddenAssignments(self, variables: Sequence[_cp.IntVar], tuples_list: Sequence[Sequence[int]], name: Optional[str] = None) -> _cp.Constraint:
+        """Add a forbidden assignments constraint."""
+        return self._register_constraint(
+            constraint=super().AddForbiddenAssignments(variables, tuples_list),
+            original_args=(tuple(variables), tuple(tuple(t) for t in tuples_list)),
+            constraint_type="ForbiddenAssignments",
+            name=name
+        )
+
+    def AddAutomaton(self, transition_variables: Sequence[_cp.IntVar], starting_state: int, final_states: Sequence[int], transition_triples: Sequence[Tuple[int, int, int]], name: Optional[str] = None) -> _cp.Constraint:
+        """Add an automaton constraint."""
+        return self._register_constraint(
+            constraint=super().AddAutomaton(transition_variables, starting_state, final_states, transition_triples),
+            original_args=(tuple(transition_variables), starting_state, tuple(final_states), tuple(transition_triples)),
+            constraint_type="Automaton",
+            name=name
+        )
+
+    def AddInverse(self, variables: Sequence[_cp.IntVar], inverse_variables: Sequence[_cp.IntVar], name: Optional[str] = None) -> _cp.Constraint:
+        """Add an inverse constraint."""
+        return self._register_constraint(
+            constraint=super().AddInverse(variables, inverse_variables),
+            original_args=(tuple(variables), tuple(inverse_variables)),
+            constraint_type="Inverse",
+            name=name
+        )
+
+    def AddReservoirConstraint(self, times: Sequence[_cp.LinearExprT], level_changes: Sequence[_cp.LinearExprT], min_level: int, max_level: int, name: Optional[str] = None) -> _cp.Constraint:
+        """Add a reservoir constraint."""
+        return self._register_constraint(
+            constraint=super().AddReservoirConstraint(times, level_changes, min_level, max_level),
+            original_args=(tuple(times), tuple(level_changes), min_level, max_level),
+            constraint_type="ReservoirConstraint",
+            name=name
+        )
+
+    # Boolean constraints
+    def AddBoolOr(self, literals: Sequence[_cp.LiteralT], name: Optional[str] = None) -> _cp.Constraint:
+        """Add a boolean OR constraint."""
+        return self._register_constraint(
+            constraint=super().AddBoolOr(literals),
+            original_args=tuple(literals),
+            constraint_type="BoolOr",
+            name=name
+        )
+
+    def AddBoolAnd(self, literals: Sequence[_cp.LiteralT], name: Optional[str] = None) -> _cp.Constraint:
+        """Add a boolean AND constraint."""
+        return self._register_constraint(
+            constraint=super().AddBoolAnd(literals),
+            original_args=tuple(literals),
+            constraint_type="BoolAnd",
+            name=name
+        )
+
+    def AddBoolXor(self, literals: Sequence[_cp.LiteralT], name: Optional[str] = None) -> _cp.Constraint:
+        """Add a boolean XOR constraint."""
+        return self._register_constraint(
+            constraint=super().AddBoolXor(literals),
+            original_args=tuple(literals),
+            constraint_type="BoolXor",
+            name=name
+        )
+
+    def AddImplication(self, a: _cp.LiteralT, b: _cp.LiteralT, name: Optional[str] = None) -> _cp.Constraint:
+        """Add an implication constraint a => b."""
+        return self._register_constraint(
+            constraint=super().AddImplication(a, b),
+            original_args=(a, b),
+            constraint_type="Implication",
+            name=name
+        )
+
+    # Scheduling constraints
+    def AddNoOverlap(self, intervals: Sequence[_cp.IntervalVar], name: Optional[str] = None) -> _cp.Constraint:
+        """Add a no overlap constraint."""
+        return self._register_constraint(
+            constraint=super().AddNoOverlap(intervals),
+            original_args=tuple(intervals),
+            constraint_type="NoOverlap",
+            name=name
+        )
+
+    def AddNoOverlap2D(self, x_intervals: Sequence[_cp.IntervalVar], y_intervals: Sequence[_cp.IntervalVar], name: Optional[str] = None) -> _cp.Constraint:
+        """Add a 2D no overlap constraint."""
+        return self._register_constraint(
+            constraint=super().AddNoOverlap2D(x_intervals, y_intervals),
+            original_args=(tuple(x_intervals), tuple(y_intervals)),
+            constraint_type="NoOverlap2D",
+            name=name
+        )
+
+    def AddCumulative(self, intervals: Sequence[_cp.IntervalVar], demands: Sequence[_cp.LinearExprT], capacity: _cp.LinearExprT, name: Optional[str] = None) -> _cp.Constraint:
+        """Add a cumulative constraint."""
+        return self._register_constraint(
+            constraint=super().AddCumulative(intervals, demands, capacity),
+            original_args=(tuple(intervals), tuple(demands), capacity),
+            constraint_type="Cumulative",
+            name=name
+        )
+
+    ###########################################################################
+    # Constraint Management
+    ###########################################################################
+
+    def enable_constraint(self, name: str) -> None:
+        """Enable a specific constraint by name."""
+        if name not in self._constraints:
+            raise ValueError(f"Constraint '{name}' not found")
+        self._constraints[name].enabled = True
+
+    def disable_constraint(self, name: str) -> None:
+        """Disable a specific constraint by name."""
+        if name not in self._constraints:
+            raise ValueError(f"Constraint '{name}' not found")
+        self._constraints[name].enabled = False
+
+    def enable_constraints(self, names: Sequence[str]) -> None:
+        """Enable multiple constraints by name."""
+        for name in names:
+            self.enable_constraint(name)
+
+    def disable_constraints(self, names: Sequence[str]) -> None:
+        """Disable multiple constraints by name."""
+        for name in names:
+            self.disable_constraint(name)
+
+    def add_constraint_tag(self, name: str, tag: str) -> None:
+        """Add a tag to a constraint for group operations."""
+        if name not in self._constraints:
+            raise ValueError(f"Constraint '{name}' not found")
+        self._constraints[name].tags.add(tag)
+
+    def enable_constraints_by_tag(self, tag: str) -> None:
+        """Enable all constraints with a specific tag."""
+        for info in self._constraints.values():
+            if tag in info.tags:
+                info.enabled = True
+
+    def disable_constraints_by_tag(self, tag: str) -> None:
+        """Disable all constraints with a specific tag."""
+        for info in self._constraints.values():
+            if tag in info.tags:
+                info.enabled = False
+
+    ###########################################################################
+    # Solving with Debugging
+    ###########################################################################
+
+    def solve(self, solver: Optional[_cp.CpSolver] = None, **solver_params) -> _cp.CpSolverStatus:
         """
-        Add a constraint to the model with optional name and automatic enable/disable support.
-
-        Parameters
-        ----------
-        constraint : Boolean or linear expression
-            The constraint to add, e.g., x + y >= 5.
-        name : Optional[str]
-            A unique name for this constraint. If None, a default name is assigned.
-
-        Returns
-        -------
-        ortools.sat.python.cp_model.Constraint
-            The added OR-Tools Constraint object.
+        Solve the model respecting constraint enable/disable flags.
+        
+        Args:
+            solver: Optional solver instance. If None, creates a new one.
+            **solver_params: Parameters to set on the solver.
+            
+        Returns:
+            Solver status.
         """
-        # Generate unique constraint ID
-        constraint_id = f"{name or 'constraint'}_{self._constraint_counter}"
-        self._constraint_counter += 1
+        solver = solver or _cp.CpSolver()
+        
+        # Apply solver parameters
+        for param_name, value in solver_params.items():
+            if hasattr(solver.parameters, param_name):
+                setattr(solver.parameters, param_name, value)
+            else:
+                raise ValueError(f"Unknown solver parameter: {param_name}")
 
-        # Validate name uniqueness
-        if name is None:
-            name = constraint_id
-        elif name in self._constraint_names:
-            raise ValueError(f"Constraint name '{name}' already exists")
-        self._constraint_names.add(name)
+        # Create a copy of the model for solving with constraints fixed
+        model = self._create_model()
+        return solver.Solve(model)
 
-        # Create enable variable for conditional enforcement
-        enable_var = self.NewBoolVar(f"enable_{name}")
+    def debug_infeasible(self, solver: Optional[_cp.CpSolver] = None, **solver_params) -> Dict[str, Any]:
+        """
+        Find a minimal set of constraints to disable to make the model feasible.
+        
+        Args:
+            solver: Optional solver instance. If None, creates a new one.
+            **solver_params: Parameters to set on the solver.
+            
+        Returns:
+            Dictionary with debugging information including disabled constraints.
+        """
+        solver = solver or _cp.CpSolver()
+        
+        # Apply solver parameters
+        for param_name, value in solver_params.items():
+            if hasattr(solver.parameters, param_name):
+                setattr(solver.parameters, param_name, value)
+            else:
+                raise ValueError(f"Unknown solver parameter: {param_name}")
 
-        # Add the conditional constraint
-        conditional_constraint = super().Add(constraint).OnlyEnforceIf(enable_var)
+        # Create debug model that minimizes disabled constraints
+        debug_model = self._create_debug_optimization_model()
+        
+        # Solve the debug model
+        status = solver.Solve(debug_model)
+        
+        if status in [_cp.OPTIMAL, _cp.FEASIBLE]:
+            # Extract which constraints were disabled
+            disabled_constraints = []
+            for name, info in self._constraints.items():
+                if info.enabled:  # Only check constraints that should be enabled
+                    # Find the corresponding enable var in the debug model
+                    enable_var_name = f"_enable_{name}"
+                    # The enable var is 0 when constraint is disabled
+                    if solver.Value(debug_model.GetVarValueMap()[enable_var_name]) == 0:
+                        disabled_constraints.append(name)
+            
+            return {
+                "status": status,
+                "feasible": True,
+                "disabled_constraints": disabled_constraints,
+                "total_disabled": len(disabled_constraints),
+            }
+        else:
+            return {
+                "status": status,
+                "feasible": False,
+                "disabled_constraints": [],
+                "total_disabled": 0,
+            }
 
+    ###########################################################################
+    # Debugging and Introspection
+    ###########################################################################
 
-        # Register constraint for later enable/disable and submodel support
-        self._constraint_registry[constraint_id] = {
-            'name': name,
-            'constraint': constraint,  # original expression
-            'ortools_constraint': conditional_constraint,  # actual Constraint object
-            'enable_var': enable_var,
-            'enabled': True
-        }
+    def get_constraint_info(self, name: str) -> ConstraintInfo:
+        """Get detailed information about a constraint."""
+        if name not in self._constraints:
+            raise ValueError(f"Constraint '{name}' not found")
+        return self._constraints[name]
 
-        # Return the Constraint object so API usage matches OR-Tools
-        return conditional_constraint
-
-
-    def enable_constraint(self, name: str):
-        cid = self._find_constraint_by_name(name)
-        if cid:
-            self._constraint_registry[cid]['enabled'] = True
-            super().Add(self._constraint_registry[cid]['enable_var'] == 1)
-
-    def disable_constraint(self, name: str):
-        cid = self._find_constraint_by_name(name)
-        if cid:
-            self._constraint_registry[cid]['enabled'] = False
-            super().Add(self._constraint_registry[cid]['enable_var'] == 0)
-
-    def enable_constraints(self, names: List[str]):
-        for n in names:
-            self.enable_constraint(n)
-
-    def disable_constraints(self, names: List[str]):
-        for n in names:
-            self.disable_constraint(n)
+    def get_variable_info(self, name: str) -> VariableInfo:
+        """Get detailed information about a variable."""
+        if name not in self._variables:
+            raise ValueError(f"Variable '{name}' not found")
+        return self._variables[name]
 
     def get_constraint_names(self) -> List[str]:
-        return [info['name'] for info in self._constraint_registry.values()]
+        """Get all constraint names."""
+        return list(self._constraints.keys())
 
-    def _find_constraint_by_name(self, name: str) -> Optional[str]:
-        for cid, info in self._constraint_registry.items():
-            if info['name'] == name:
-                return cid
-        return None
+    def get_variable_names(self) -> List[str]:
+        """Get all variable names."""
+        return list(self._variables.keys())
 
-    # -------------------------------
-    # Objective management
-    # -------------------------------
-    def Minimize(self, expression, name: Optional[str] = None):
-        if name is None:
-            name = f"objective_{self._objective_counter}"
-            self._objective_counter += 1
-        elif name in self._objective_names:
-            raise ValueError(f"Objective name '{name}' already exists")
+    def get_constraints_by_type(self, constraint_type: str) -> List[str]:
+        """Get all constraints of a specific type."""
+        return [name for name, info in self._constraints.items() 
+                if info.constraint_type == constraint_type]
 
-        self._objective_names.add(name)
-        self._objectives[name] = {
-            'expression': expression,
-            'is_minimization': True
-        }
-        super().Minimize(expression)
+    def get_variables_by_type(self, var_type: str) -> List[str]:
+        """Get all variables of a specific type."""
+        return [name for name, info in self._variables.items() 
+                if info.var_type == var_type]
 
-    def Maximize(self, expression, name: Optional[str] = None):
-        if name is None:
-            name = f"objective_{self._objective_counter}"
-            self._objective_counter += 1
-        elif name in self._objective_names:
-            raise ValueError(f"Objective name '{name}' already exists")
+    def get_constraints_by_tag(self, tag: str) -> List[str]:
+        """Get all constraints with a specific tag."""
+        return [name for name, info in self._constraints.items() 
+                if tag in info.tags]
 
-        self._objective_names.add(name)
-        self._objectives[name] = {
-            'expression': expression,
-            'is_minimization': False
-        }
-        super().Maximize(expression)
+    def get_enabled_constraints(self) -> List[str]:
+        """Get all currently enabled constraints."""
+        return [name for name, info in self._constraints.items() if info.enabled]
 
-    def set_objective(self, name: str):
-        if name not in self._objectives:
-            raise ValueError(f"Objective '{name}' not registered")
-        obj = self._objectives[name]
-        if obj['is_minimization']:
-            self.Minimize(obj['expression'])
-        else:
-            self.Maximize(obj['expression'])
+    def get_disabled_constraints(self) -> List[str]:
+        """Get all currently disabled constraints."""
+        return [name for name, info in self._constraints.items() if not info.enabled]
 
-    def get_objective_names(self) -> List[str]:
-        return list(self._objectives.keys())
+    def summary(self) -> Dict[str, Any]:
+        """Get a comprehensive summary of the model state."""
+        constraint_types = {}
+        for info in self._constraints.values():
+            constraint_types[info.constraint_type] = constraint_types.get(info.constraint_type, 0) + 1
 
-    # -------------------------------
-    # Submodel support
-    # -------------------------------
-    def create_submodel(self, name: str, constraint_names: List[str]):
-        valid = self.get_constraint_names()
-        invalid = [n for n in constraint_names if n not in valid]
-        if invalid:
-            raise ValueError(f"Invalid constraint names: {invalid}")
-        self._submodels[name] = constraint_names
+        variable_types = {}
+        for info in self._variables.values():
+            variable_types[info.var_type] = variable_types.get(info.var_type, 0) + 1
 
-    def activate_submodel(self, name: str):
-        if name not in self._submodels:
-            raise ValueError(f"Submodel '{name}' not found")
-        active_constraints = set(self._submodels[name])
-        for _, info in self._constraint_registry.items():
-            if info['name'] in active_constraints:
-                self.enable_constraint(info['name'])
-            else:
-                self.disable_constraint(info['name'])
-        self._active_submodel = name
-
-    def deactivate_submodel(self):
-        for _, info in self._constraint_registry.items():
-            self.enable_constraint(info['name'])
-        self._active_submodel = None
-
-    class _SubmodelContext:
-        def __init__(self, model, name):
-            self.model = model
-            self.name = name
-            self.prev_submodel = model._active_submodel
-        def __enter__(self):
-            self.model.activate_submodel(self.name)
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            if self.prev_submodel:
-                self.model.activate_submodel(self.prev_submodel)
-            else:
-                self.model.deactivate_submodel()
-
-    def submodel(self, name: str):
-        return self._SubmodelContext(self, name)
-
-    # -------------------------------
-    # Debugging tools
-    # -------------------------------
-    def set_debug_solver_params(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self._debug_solver.parameters, k, v)
-
-    def find_minimal_infeasible_constraints(self) -> List[str]:
-        disable_vars = []
-        names = []
-        for _, info in self._constraint_registry.items():
-            disable_var = self.NewBoolVar(f"disable_{info['name']}")
-            super().Add(disable_var + info['enable_var'] == 1)
-            disable_vars.append(disable_var)
-            names.append(info['name'])
-        self.Minimize(sum(disable_vars))
-        status = self._debug_solver.Solve(self)
-        if status not in [cp_model.OPTIMAL, cp_model.FEASIBLE]:
-            return []
-        return [names[i] for i, dv in enumerate(disable_vars)
-                if self._debug_solver.Value(dv) == 1]
-
-    def debug_solve(self) -> Dict[str, Any]:
-        status = self._debug_solver.Solve(self)
-        debug_info = {
-            'status': status,
-            'feasible': status in [cp_model.OPTIMAL, cp_model.FEASIBLE],
-            'solve_time': self._debug_solver.WallTime(),
-            'disabled_constraints': []
-        }
-        if not debug_info['feasible']:
-            disabled = self.find_minimal_infeasible_constraints()
-            debug_info['disabled_constraints'] = disabled
-            for c in disabled:
-                self.disable_constraint(c)
-            final_status = self._debug_solver.Solve(self)
-            debug_info.update({
-                'final_status': final_status,
-                'final_feasible': final_status in [cp_model.OPTIMAL, cp_model.FEASIBLE]
-            })
-        return debug_info
-
-    # -------------------------------
-    # Summaries
-    # -------------------------------
-    def summary(self):
         return {
-            "constraints": {
-                name: "enabled" if info['enabled'] else "disabled"
-                for _, info in self._constraint_registry.items()
-                for name in [info['name']]
-            },
-            "objectives": list(self._objectives.keys()),
-            "variables": list(self._variables.keys()),
-            "submodels": list(self._submodels.keys()),
-            "active_submodel": self._active_submodel
+            "total_constraints": len(self._constraints),
+            "enabled_constraints": len(self.get_enabled_constraints()),
+            "disabled_constraints": len(self.get_disabled_constraints()),
+            "constraint_types": constraint_types,
+            "total_variables": len(self._variables),
+            "variable_types": variable_types,
+            "all_tags": list(set().union(*(info.tags for info in self._constraints.values()))),
         }
+
+    def validate_model(self) -> Dict[str, Any]:
+        """
+        Validate the current model state and return diagnostic information.
+        
+        Returns:
+            Dictionary with validation results and potential issues.
+        """
+        issues = []
+        warnings = []
+
+        # Check for disabled constraints
+        disabled = self.get_disabled_constraints()
+        if disabled:
+            warnings.append(f"{len(disabled)} constraints are disabled")
+
+        # Check for unused variables (variables not referenced in any enabled constraint)
+        # This is a simplified check - full implementation would need constraint analysis
+        referenced_vars = set()
+        for info in self._constraints.values():
+            if info.enabled:
+                # This would need proper constraint parsing to be complete
+                pass
+
+        return {
+            "is_valid": len(issues) == 0,
+            "issues": issues,
+            "warnings": warnings,
+            "disabled_constraints": disabled,
+        }
+
+    ###########################################################################
+    # Internal Helpers
+    ###########################################################################
+
+    def _register_constraint(
+        self,
+        constraint: _cp.Constraint,
+        original_args: Any,
+        constraint_type: str,
+        name: Optional[str]
+    ) -> _cp.Constraint:
+        """Register a constraint with full metadata and enable variable."""
+        # Generate unique name if not provided
+        if name is None:
+            name = f"{constraint_type.lower()}_{self._constraint_counter}"
+        elif name in self._constraints:
+            raise ValueError(f"Constraint name '{name}' already exists")
+        
+        self._constraint_counter += 1
+
+        # Create enable variable and attach to constraint
+        enable_var = super().NewBoolVar(f"_enable_{name}")
+        constraint.OnlyEnforceIf(enable_var)
+
+        # Store constraint information
+        self._constraints[name] = ConstraintInfo(
+            name=name,
+            original_args=original_args,
+            constraint_type=constraint_type,
+            ortools_ct=constraint,
+            enable_var=enable_var,
+        )
+
+        return constraint
+
+    def _create_model(self) -> _cp.CpModel:
+        """Create a copy of this model with constraints fixed according to enabled flags."""
+        debug_model = _cp.CpModel()
+        
+        # Copy this model's proto
+        debug_model.CopyFrom(self)
+        
+        # Add constraints to fix enable variables according to enabled flags
+        for info in self._constraints.values():
+            if info.enabled:
+                debug_model.Add(info.enable_var == 1)
+            else:
+                debug_model.Add(info.enable_var == 0)
+                
+        return debug_model
+
+    def _create_debug_optimization_model(self) -> _cp.CpModel:
+        """Create a model that minimizes the number of disabled constraints."""
+        debug_model = _cp.CpModel()
+        
+        # Copy this model's proto
+        debug_model.CopyFrom(self)
+        
+        # For disabled constraints, force them to stay disabled
+        # For enabled constraints, allow them to be disabled but minimize this
+        disabled_vars = []
+        for info in self._constraints.values():
+            if not info.enabled:
+                # Force disabled constraints to stay disabled
+                debug_model.Add(info.enable_var == 0)
+            else:
+                # For enabled constraints, add (1 - enable_var) to objective
+                # This counts how many enabled constraints get disabled
+                disabled_vars.append(1 - info.enable_var)
+        
+        # Minimize the number of enabled constraints that get disabled
+        if disabled_vars:
+            debug_model.Minimize(sum(disabled_vars))
+            
+        return debug_model
+
+    def __len__(self) -> int:
+        """Return the number of constraints."""
+        return len(self._constraints)
+
+    def __contains__(self, name: str) -> bool:
+        """Check if a constraint name exists."""
+        return name in self._constraints
+
+    def __getitem__(self, name: str) -> ConstraintInfo:
+        """Get constraint info by name."""
+        return self.get_constraint_info(name)
+
+    def __repr__(self) -> str:
+        """String representation of the model."""
+        return f"EnhancedCpModel(constraints={len(self._constraints)}, variables={len(self._variables)})"
