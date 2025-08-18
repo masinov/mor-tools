@@ -116,6 +116,8 @@ class EnhancedCpSolver(cp_model.CpSolver):
         """
         # Snapshot current parameters to restore them later if they are modified
         original_params = self._snapshot_parameters()
+
+        self._validate_solver_params(solver_params)
         
         # Apply any temporary solver parameters
         for param_name, value in solver_params.items():
@@ -484,7 +486,18 @@ class EnhancedCpSolver(cp_model.CpSolver):
         p = sat_parameters_pb2.SatParameters()
         p.CopyFrom(self.parameters)
         return p
-
+    
+    def _validate_solver_params(self, params: Dict[str, Any]) -> None:
+        """Raise ValueError for unknown solver parameter names."""
+        desc = self.parameters.DESCRIPTOR
+        for name in params:
+            if not desc.fields_by_name.get(name):
+                # allow snake_case → camelCase fallback
+                camel = ''.join(w.capitalize() for w in name.split('_'))
+                camel = camel[0].lower() + camel[1:]
+                if not desc.fields_by_name.get(camel):
+                    raise ValueError(f"Unknown solver parameter: {name}")
+                
     @staticmethod
     def _status_name(status: int) -> str:
         """Converts a status code to its string representation."""

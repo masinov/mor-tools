@@ -1,6 +1,9 @@
 from __future__ import annotations
 from typing import Dict, List, Optional, Any, Union, Sequence, Tuple
 from ortools.sat.python import cp_model as _cp
+from google.protobuf.descriptor import FieldDescriptor
+import json
+import zipfile
 
 ###############################################################################
 # Helper classes for debugging
@@ -530,7 +533,16 @@ class EnhancedCpModel(_cp.CpModel):
 
     def get_enabled_objectives(self) -> List[ObjectiveInfo]:
         """Get all currently enabled objectives."""
-        return [obj for obj in self._objectives if obj.enabled]
+        enabled = [obj for obj in self._objectives if obj.enabled]
+        if len(enabled) > 1:
+            import warnings
+            warnings.warn(
+                f"Multiple objectives enabled ({len(enabled)}); "
+                "OR-Tools will use only the last one.",
+                RuntimeWarning,
+                stacklevel=2
+            )
+        return enabled
 
     ###########################################################################
     # Constraint Management
@@ -675,41 +687,33 @@ class EnhancedCpModel(_cp.CpModel):
         return solving_model
 
     def _map_expr_to_new_model(self, expr, var_mapping):
-        """
-        Map a linear expression from the original model to the new model.
-        
-        Args:
-            expr: The expression to map (can be a variable, constant, or expression)
-            var_mapping: Dictionary mapping old variable names to new variables
-            
-        Returns:
-            The mapped expression in the new model
-        """
-        # If it's a simple integer, return as is
+        """Return expr with all variables remapped via var_mapping."""
         if isinstance(expr, int):
             return expr
-        
-        # If it's a variable, look it up in our mapping
-        if hasattr(expr, 'Name'):
-            var_name = expr.Name()
-            if var_name in var_mapping:
-                return var_mapping[var_name]
-            else:
-                # Try to find by matching variable info
-                for name, info in self._variables.items():
-                    if info.ortools_var == expr and name in var_mapping:
-                        return var_mapping[name]
-                
-                # If we can't find the variable, it might be a constant
-                if hasattr(expr, 'Value'):
-                    return expr.Value()
-                else:
-                    # Last resort: return the expression as-is
-                    return expr
-        
-        # For complex expressions, we'd need more sophisticated mapping
+        if hasattr(expr, 'Name') and expr.Name() and expr.Name() in var_mapping:
+            return var_mapping[expr.Name()]
+        # Recursive handling for linear expressions
+        return self._deep_map_expr(expr, var_mapping)
+    
+    def _deep_map_expr(self, expr, var_mapping):
+        """Recursively rebuild linear expressions with remapped variables."""
+        if isinstance(expr, int):
+            return expr
+        # LinearExpr API: LinearExpr.Sum, LinearExpr.WeightedSum, etc.
+        if hasattr(expr, 'GetVars'):
+            new_terms = []
+            for var, coeff in expr.GetVars():
+                new_var = self._map_expr_to_new_model(var, var_mapping)
+                new_terms.append((new_var, coeff))
+            const = getattr(expr, 'Offset', 0)
+            new_expr = _cp.LinearExpr.WeightedSum([v for v, _ in new_terms],
+                                                  [c for _, c in new_terms])
+            if const:
+                new_expr += const
+            return new_expr
+        # Fallback for anything else
         return expr
-
+    
     def _recreate_constraint_in_model(self, model: _cp.CpModel, constraint_info: ConstraintInfo, var_mapping: Dict[str, Any]) -> None:
         """
         Recreate a constraint in the new model with mapped variables.
@@ -1130,36 +1134,141 @@ class EnhancedCpModel(_cp.CpModel):
     
     def export_to_file(self, filename: str) -> None:
         """
-        Export the model to a file in proto format.
-        
-        Args:
-            filename: Path to the output file.
+        Persist the *entire* EnhancedCpModel (proto + metadata) to disk.
+
+        The file is a zip archive with two entries:
+            model.pb   – raw OR-Tools proto
+            meta.json  – all metadata (variables, constraints, objectives, tags, etc.)
         """
-        # Write proto to file manually since ExportToFile doesn't exist
-        with open(filename, 'wb') as f:
-            f.write(self.Proto().SerializeToString())
-    
+        # 1. Serialise the OR-Tools proto
+        proto_bytes = self.Proto().SerializeToString()
+
+        # 2. Build a plain-python representation of our metadata
+        variables_meta: Dict[str, Dict[str, Any]] = {}
+        for name, info in self._variables.items():
+            variables_meta[name] = {
+                "var_type": info.var_type,
+                "creation_args": info.creation_args,
+            }
+
+        constraints_meta: Dict[str, Dict[str, Any]] = {}
+        for name, info in self._constraints.items():
+            constraints_meta[name] = {
+                "original_args": info.original_args,   # tuples/lists OK for json
+                "constraint_type": info.constraint_type,
+                "enabled": info.enabled,
+                "tags": list(info.tags),
+            }
+
+        objectives_meta = [
+            {
+                "objective_type": obj.objective_type,
+                "name": obj.name,
+                "enabled": obj.enabled,
+            }
+            for obj in self._objectives
+        ]
+
+        meta = {
+            "variables": variables_meta,
+            "constraints": constraints_meta,
+            "objectives": objectives_meta,
+            "constraint_counter": self._constraint_counter,
+            "variable_counter": self._variable_counter,
+        }
+
+        # 3. Write both pieces into a zip file
+        with zipfile.ZipFile(filename, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("model.pb", proto_bytes)
+            zf.writestr("meta.json", json.dumps(meta, separators=(",", ":")))
+
     def import_from_file(self, filename: str) -> None:
         """
-        Import a model from a file in proto format.
-        
-        Args:
-            filename: Path to the input file.
+        Load a model previously saved with export_to_file.
+        Restores both the OR-Tools proto and all EnhancedCpModel metadata.
         """
-        # Clear current model
+
         self._clear_model()
-        
-        # Read proto from file manually since ImportFromFile doesn't exist
-        with open(filename, 'rb') as f:
-            proto_data = f.read()
-        
-        # Parse and load the proto
-        from ortools.sat import cp_model_pb2
-        proto = cp_model_pb2.CpModelProto()
-        proto.ParseFromString(proto_data)
-        self.Proto().CopyFrom(proto)
-        
-        # Note: Importing from file loses all EnhancedCpModel metadata
+
+        with zipfile.ZipFile(filename, 'r') as zf:
+            # ---------- 1. Proto ----------
+            proto_bytes = zf.read("model.pb")
+            from ortools.sat import cp_model_pb2
+            proto = cp_model_pb2.CpModelProto()
+            proto.ParseFromString(proto_bytes)
+            self.Proto().CopyFrom(proto)
+
+            # ---------- 2. Metadata ----------
+            meta_raw = zf.read("meta.json").decode("utf-8")
+            meta = json.loads(meta_raw)
+
+            # ---------- 3. Variables ----------
+            self._variables.clear()
+            for name, vmeta in meta["variables"].items():
+                var_type = vmeta["var_type"]
+                args = tuple(vmeta["creation_args"])
+                # fetch the *actual* variable from the freshly-loaded proto
+                ortools_var = None
+                if var_type in ("IntVar", "BoolVar"):
+                    # OR-Tools variables are indexed by name
+                    ortools_var = self.get_variable_by_name(name)
+                elif var_type in ("IntervalVar", "OptionalIntervalVar"):
+                    # Interval vars can be found by name as well
+                    ortools_var = self.get_variable_by_name(name)
+                elif var_type == "Constant":
+                    # Constants do not need a wrapper; skip or handle specially
+                    continue
+                if ortools_var is None:
+                    raise RuntimeError(f"Variable {name} not found in proto")
+                self._variables[name] = VariableInfo(
+                    name=name,
+                    var_type=var_type,
+                    ortools_var=ortools_var,
+                    creation_args=args,
+                )
+
+            # ---------- 4. Objectives ----------
+            self._objectives.clear()
+            for ometa in meta["objectives"]:
+                # The objective expression is already in the proto.
+                # We only need the wrapper.
+                obj = ObjectiveInfo(
+                    objective_type=ometa["objective_type"],
+                    linear_expr=_cp.LinearExpr(),  # placeholder, not used
+                    name=ometa["name"],
+                )
+                obj.enabled = ometa["enabled"]
+                self._objectives.append(obj)
+
+            # ---------- 5. Constraints ----------
+            self._constraints.clear()
+            for name, cmeta in meta["constraints"].items():
+                # Locate the real OR-Tools constraint in the proto
+                # (We stored its index in original_args or we can rely on name order.)
+                # For simplicity we just need the *literal* (enable variable).
+                # It is the variable named "_enable_<constraint_name>".
+                enable_name = f"_enable_{name}"
+                enable_var = self.get_variable_by_name(enable_name)
+                if enable_var is None:
+                    # Fallback: create a new BoolVar only if it is missing
+                    # (should not happen with a faithful save/load)
+                    enable_var = super().NewBoolVar(enable_name)
+
+                self._constraints[name] = ConstraintInfo(
+                    name=name,
+                    original_args=tuple(cmeta["original_args"]),
+                    constraint_type=cmeta["constraint_type"],
+                    # We do NOT store the actual OR-Tools constraint object here;
+                    # we only need the enable variable for enable/disable logic
+                    ortools_ct=enable_var,
+                    enable_var=enable_var,
+                )
+                self._constraints[name].enabled = cmeta["enabled"]
+                self._constraints[name].tags = set(cmeta["tags"])
+
+            # ---------- 6. Counters ----------
+            self._constraint_counter = meta["constraint_counter"]
+            self._variable_counter = meta["variable_counter"]
 
     ###########################################################################
     # Advanced Methods
