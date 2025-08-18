@@ -580,9 +580,9 @@ class EnhancedCpModel(_cp.CpModel):
     # Solving with Debugging
     ###########################################################################
 
-    def solve(self, solver: Optional[_cp.CpSolver] = None, **solver_params) -> _cp.CpSolverStatus:
+    def _solve(self, solver: Optional[_cp.CpSolver] = None, **solver_params) -> int:
         """
-        Solve the model respecting constraint enable/disable flags.
+        Solve the model respecting constraint enable/disable flags. Method only intended for model debugging purposes.
         
         Args:
             solver: Optional solver instance. If None, creates a new one.
@@ -877,7 +877,7 @@ class EnhancedCpModel(_cp.CpModel):
                 raise ValueError(f"Unknown solver parameter: {param_name}")
 
         # First check if the model is already feasible
-        simple_status = self.solve(solver)
+        simple_status = self._solve(solver)
         if simple_status in [_cp.OPTIMAL, _cp.FEASIBLE]:
             return {
                 "status": simple_status,
@@ -953,7 +953,7 @@ class EnhancedCpModel(_cp.CpModel):
             self.disable_constraint(constraint_name)
         
         # Test feasibility
-        verification_status = self.solve(solver)
+        verification_status = self._solve(solver)
         
         # Restore original constraint states
         for name, original_state in original_states.items():
@@ -994,6 +994,12 @@ class EnhancedCpModel(_cp.CpModel):
     def get_variable_names(self) -> List[str]:
         """Get all variable names."""
         return list(self._variables.keys())
+    
+    def get_variable_by_name(self, name: str) -> Optional[Union[_cp.IntVar, _cp.IntervalVar]]:
+        """Get a variable by its name."""
+        if name in self._variables:
+            return self._variables[name].ortools_var
+        return None
 
     def get_constraints_by_type(self, constraint_type: str) -> List[str]:
         """Get all constraints of a specific type."""
