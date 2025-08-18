@@ -1,10 +1,8 @@
 from __future__ import annotations
 from typing import Dict, List, Optional, Any, Union, Sequence, Tuple
 from ortools.sat.python import cp_model as _cp
-from google.protobuf.descriptor import FieldDescriptor
 import json
 import zipfile
-
 
 from constructors import EnhancedConstructorsMixin
 
