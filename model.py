@@ -5,6 +5,10 @@ from google.protobuf.descriptor import FieldDescriptor
 import json
 import zipfile
 
+
+from constructors import EnhancedConstructorsMixin
+
+
 ###############################################################################
 # Helper classes for debugging
 ###############################################################################
@@ -52,7 +56,7 @@ class ObjectiveInfo:
 
 
 ###############################################################################
-class EnhancedCpModel(_cp.CpModel):
+class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
     """
     Drop-in replacement for CpModel that provides:
     - Complete constraint and variable registration
@@ -575,6 +579,13 @@ class EnhancedCpModel(_cp.CpModel):
         if name not in self._constraints:
             raise ValueError(f"Constraint '{name}' not found")
         self._constraints[name].tags.add(tag)
+
+    def add_constraint_tags(self, name: str, tags: List[str]) -> None:
+        """Add multiple tags to a constraint for group operations."""
+        if name not in self._constraints:
+            raise ValueError(f"Constraint '{name}' not found")
+        for tag in tags:
+            self._constraints[name].tags.add(tag)
 
     def enable_constraints_by_tag(self, tag: str) -> None:
         """Enable all constraints with a specific tag."""
