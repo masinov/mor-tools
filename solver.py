@@ -2,7 +2,6 @@ from __future__ import annotations
 from typing import List, Dict, Any, Optional, Union
 import time
 
-# Assuming model.py is in the same directory or accessible in the python path
 from model import EnhancedCpModel
 from ortools.sat.python import cp_model
 from ortools.sat import sat_parameters_pb2
