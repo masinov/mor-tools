@@ -1,0 +1,99 @@
+## Module Purpose
+This module provides a multi-objective management system for constraint programming models. It extends OR-Tools' CpModel to support registering multiple objectives and dynamically enabling/disabling them, while ensuring only one objective is active at a time.
+
+## Public API
+
+### ObjectiveInfo Class
+**Usage pattern**: Internal data class, not typically used directly by end users
+```python
+# Created automatically by _ObjectivesMixin methods
+obj_info = ObjectiveInfo("Minimize", linear_expr, "my_objective")
+```
+
+**Method signatures**:
+- `__init__(objective_type: str, linear_expr: _cp.LinearExprT, name: Optional[str] = None) -> None`
+
+**Dependencies**: ortools.sat.python.cp_model (as _cp)
+
+### _ObjectivesMixin Class
+**Usage pattern**: Inherit from this class to add multi-objective capabilities
+```python
+from ortools.sat.python import cp_model
+
+class MyModel(_ObjectivesMixin, cp_model.CpModel):
+    def __init__(self):
+        super().__init__()
+```
+
+**Method signatures**:
+- `Minimize(obj: _cp.LinearExprT, name: Optional[str] = None) -> None`
+- `Maximize(obj: _cp.LinearExprT, name: Optional[str] = None) -> None`
+- `enable_objective(name: str) -> None`
+- `disable_objective(name: str) -> None`
+- `get_enabled_objective() -> Optional[ObjectiveInfo]`
+
+**Dependencies**: Inherits from `_cp.CpModel`, uses `ObjectiveInfo`
+
+**Return types**:
+- `Minimize`/`Maximize`: None (register objectives)
+- `enable_objective`/`disable_objective`: None
+- `get_enabled_objective`: ObjectiveInfo or None
+
+## Cross-References
+
+**Imports from other modules**:
+- `from ortools.sat.python.cp_model import *` (as _cp) - Core constraint programming functionality
+- `from typing import List, Optional, Sequence` - Type annotations
+
+**Exports to other modules**:
+- `ObjectiveInfo` - Data container for objective metadata
+- `_ObjectivesMixin` - Main functionality for multi-objective management
+
+**Potential issues**:
+- The mixin assumes proper multiple inheritance setup
+- No explicit error handling for duplicate objective names
+- Lazy initialization pattern may cause issues if `_ensure_objectives()` is called before objective registration
+
+## Integration Examples
+
+```python
+from ortools.sat.python import cp_model
+from model.objectives import _ObjectivesMixin
+
+class MultiObjectiveModel(_ObjectivesMixin, cp_model.CpModel):
+    def __init__(self):
+        super().__init__()
+        
+    def solve_with_objective(self, objective_name: str):
+        self.enable_objective(objective_name)
+        solver = cp_model.CpSolver()
+        status = solver.Solve(self)
+        return status, solver
+
+# Usage
+model = MultiObjectiveModel()
+x = model.NewIntVar(0, 10, 'x')
+y = model.NewIntVar(0, 10, 'y')
+
+# Register multiple objectives
+model.Minimize(x + y, "min_sum")
+model.Maximize(x - y, "max_diff")
+
+# Switch between objectives
+model.enable_objective("min_sum")
+status, solver = model.solve_with_objective("min_sum")
+print(f"Min sum result: {solver.Value(x)}, {solver.Value(y)}")
+
+model.enable_objective("max_diff")
+status, solver = model.solve_with_objective("max_diff")
+print(f"Max diff result: {solver.Value(x)}, {solver.Value(y)}")
+```
+
+```python
+# Checking current objective
+current_obj = model.get_enabled_objective()
+if current_obj:
+    print(f"Active objective: {current_obj.name} ({current_obj.objective_type})")
+```
+
+This module enables building constraint programming models that can easily switch between different optimization goals while maintaining the constraint satisfaction framework provided by OR-Tools.

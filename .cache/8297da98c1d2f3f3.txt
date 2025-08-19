@@ -1,0 +1,128 @@
+## Module Purpose
+This module provides debugging and introspection utilities for constraint programming models built on Google OR-Tools' CP-SAT solver. It extends the base CpModel class with functionality for identifying minimal infeasible subsets (MIS), constraint relaxation, model summarization, and constraint management.
+
+## Public API
+
+### _DebugMixin Class
+**Usage pattern:**
+```python
+from model.debug import _DebugMixin
+from ortools.sat.python import cp_model
+
+class EnhancedCpModel(_DebugMixin, cp_model.CpModel):
+    pass
+
+model = EnhancedCpModel()
+```
+
+**Key Methods:**
+
+1. **debug_infeasible()**
+```python
+def debug_infeasible(
+    self,
+    solver: Optional[_cp.CpSolver] = None,
+    **solver_params,
+) -> Dict[str, Any]:
+```
+- **Purpose**: Finds minimal set of constraints to disable to make model feasible
+- **Returns**: Dict with keys: status, feasible, disabled_constraints, total_disabled, method
+- **Dependencies**: ortools.sat.python.cp_model, random, typing
+
+2. **summary()**
+```python
+def summary(self) -> Dict[str, Any]:
+```
+- **Purpose**: Provides comprehensive model overview
+- **Returns**: Dict with constraint/variable counts, types, and status information
+
+3. **validate_model()**
+```python
+def validate_model(self) -> Dict[str, Any]:
+```
+- **Purpose**: Basic diagnostics for model validation
+- **Returns**: Dict with issues and warnings lists
+
+4. **Constraint Management Methods:**
+```python
+def get_constraint_names(self) -> List[str]
+def get_variable_names(self) -> List[str]
+def get_constraint_info(self, name: str) -> ConstraintInfo
+def get_constraints_by_type(self, constraint_type: str) -> List[str]
+def get_constraints_by_tag(self, tag: str) -> List[str]
+def get_enabled_constraints(self) -> List[str]
+def get_disabled_constraints(self) -> List[str]
+```
+
+5. **Model Transformation Methods:**
+```python
+def create_relaxed_copy(self, relaxation_factor: float = 0.1) -> Any
+def create_subset_copy(self, constraint_names: Sequence[str]) -> Any
+```
+
+## Cross-References
+
+**Imports from other modules:**
+- `ortools.sat.python.cp_model` (as _cp): Base CP-SAT functionality
+- `constraints.ConstraintInfo`: Constraint metadata structure
+- Standard library: random, typing (Any, Dict, List, Optional, Sequence)
+
+**Exports to other modules:**
+- `_DebugMixin` class designed to be mixed into CpModel subclasses
+- Provides debugging infrastructure for constraint programming models
+
+**Potential issues:**
+- The mixin assumes the presence of `_constraints` attribute (created by `_ensure_constraints()`)
+- Return types use `Any` for methods returning self-type (due to mixin pattern)
+- Requires proper integration with a CpModel subclass
+
+## Integration Examples
+
+**Basic usage with model debugging:**
+```python
+from model.debug import _DebugMixin
+from ortools.sat.python import cp_model
+
+class DebuggableModel(_DebugMixin, cp_model.CpModel):
+    pass
+
+# Create and populate model
+model = DebuggableModel()
+x = model.NewIntVar(0, 10, 'x')
+y = model.NewIntVar(0, 10, 'y')
+model.Add(x + y > 20)  # Potentially infeasible constraint
+
+# Debug infeasibility
+result = model.debug_infeasible()
+print(f"Minimal infeasible subset: {result['disabled_constraints']}")
+
+# Get model summary
+print(model.summary())
+
+# Create relaxed version
+relaxed_model = model.create_relaxed_copy(0.2)
+```
+
+**Constraint introspection:**
+```python
+# Get all constraint names
+constraint_names = model.get_constraint_names()
+
+# Get info about specific constraint
+info = model.get_constraint_info('constraint_1')
+print(f"Type: {info.constraint_type}, Enabled: {info.enabled}")
+
+# Filter constraints by type
+linear_constraints = model.get_constraints_by_type('linear')
+```
+
+**Model validation:**
+```python
+validation = model.validate_model()
+if validation['issues']:
+    print("Model has issues:", validation['issues'])
+if validation['warnings']:
+    print("Warnings:", validation['warnings'])
+```
+
+The module provides essential debugging capabilities for CP-SAT models, particularly useful for identifying why models are infeasible and understanding model structure through comprehensive introspection.

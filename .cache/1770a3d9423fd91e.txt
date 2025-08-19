@@ -1,0 +1,18 @@
+**Primary Purpose:** This file provides a rich wrapper around OR-Tools CP-SAT variables with metadata tracking and enhanced variable creation capabilities, extending the base CpModel functionality.
+
+**Key Responsibilities:**
+- Creating and managing different types of constraint programming variables (IntVar, BoolVar, IntervalVar, OptionalIntervalVar)
+- Maintaining variable metadata and registry through VariableInfo class
+- Providing expression mapping utilities for variable remapping between models
+- Ensuring proper variable initialization and mix-in safety
+- Handling constant creation with unique naming
+
+**Architecture Role:** This serves as a core extension module that enhances the OR-Tools CP-SAT model with additional functionality. It acts as a mixin class (_VariablesMixin) designed to be composed with the base CpModel, providing metadata tracking and advanced variable management capabilities.
+
+**Notable Patterns:**
+- **Mixin Pattern:** _VariablesMixin extends _cp.CpModel functionality without traditional inheritance
+- **Lazy Initialization:** _ensure_variables() method for on-demand registry setup
+- **Factory Methods:** Multiple New*Var methods following a consistent creation pattern
+- **Visitor Pattern:** _deep_map_expr implements recursive expression traversal for variable remapping
+- **Metadata Attachment:** VariableInfo class stores creation context alongside OR-Tools variables
+- **Expression Processing:** Comprehensive handling of linear expressions with GetVar, GetVars, and WeightedSum operations

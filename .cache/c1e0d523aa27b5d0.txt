@@ -1,0 +1,28 @@
+## Repository Architecture Overview
+
+**Core Purpose:** This repository implements an enhanced wrapper framework around Google OR-Tools' CP-SAT constraint programming solver, providing advanced constraint management, debugging capabilities, serialization, and metadata tracking while maintaining full compatibility with the underlying OR-Tools API.
+
+**Architectural Style:** The architecture follows a **layered wrapper pattern** with a **monolithic core** that extends the base CpModel functionality. It uses a **mixin-based composition** approach where specialized functionality is separated into focused modules that enhance the core model class.
+
+**Key Components:**
+- **Core Model** (`model.py`): The central wrapper class that extends CpModel and integrates all functionality
+- **Constraint Management** (`constraints.py`): Handles constraint registration, tagging, and metadata tracking
+- **Variable Management** (`variables.py`): Provides enhanced variable creation with metadata preservation
+- **Constructor Tools** (`constructor_tools.py`, `constructors.py`): Factory methods for creating common constraint patterns and boolean indicators
+- **Debug Utilities** (`debug.py`): Implements infeasibility analysis through Minimal Infeasible Subset detection
+- **Serialization** (`io.py`): Handles complete model persistence and restoration with metadata
+- **Objective Management** (`objectives.py`): Manages multiple optimization objectives with metadata tracking
+
+**Data Flow:** The system follows a **builder pattern** flow: Users create variables through the enhanced wrapper, define constraints using constructor tools, register objectives, and then serialize or solve the model. Constraints and variables maintain metadata throughout their lifecycle, and the debugging layer can analyze failed models to identify root causes of infeasibility.
+
+**Integration Points:** All components integrate through the central `Model` class which inherits from CpModel and mixes in functionality from various modules. The constraint system uses a registration mechanism (`_register_constraint`, `_ensure_constraints`) to track metadata. The serialization system coordinates with all other components to persist and restore complete model state including variables, constraints, objectives, and their associated metadata.
+
+**Design Patterns:**
+- **Wrapper/Decorator Pattern:** Extensive wrapping of OR-Tools primitives to add metadata
+- **Factory Method Pattern:** Constructor tools provide factory methods for common constraint types
+- **Builder Pattern:** Fluent interface for constraint construction
+- **Registry Pattern:** Constraint and objective tracking through registration systems
+- **Mixin Pattern:** Modular functionality added through class composition
+- **Strategy Pattern:** Multiple objective handling with interchangeable optimization strategies
+
+The architecture emphasizes **metadata preservation** throughout the modeling lifecycle, enabling advanced debugging, serialization, and introspection capabilities that are not available in the base OR-Tools implementation.

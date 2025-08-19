@@ -1,0 +1,111 @@
+## Module Purpose
+This module provides model persistence capabilities for OR-Tools CP-SAT models, enabling complete serialization and deserialization of constraint programming models including both the underlying OR-Tools protocol buffers and Python-side metadata.
+
+## Public API
+
+### Class: `_IOMixin` (inherits from `_cp.CpModel`)
+
+**Usage pattern:**
+```python
+from ortools.sat.python.cp_model import CpModel
+from your_module import _IOMixin  # Assuming this is mixed into a model class
+
+class EnhancedCpModel(_IOMixin, CpModel):
+    pass
+
+model = EnhancedCpModel()
+```
+
+**Method signatures:**
+
+#### `export_to_file(filename: str) -> None`
+Persists the entire EnhancedCpModel (proto + metadata) to disk as a ZIP archive.
+
+**Parameters:**
+- `filename`: Path to save the model file
+
+**Dependencies:** Requires `zipfile`, `json`, and OR-Tools protobuf serialization
+
+#### `import_from_file(filename: str) -> None`
+Loads a model from a saved file, restoring both OR-Tools proto and metadata.
+
+**Parameters:**
+- `filename`: Path to load the model file from
+
+**Dependencies:** Requires `zipfile`, `json`, and OR-Tools protobuf parsing
+
+#### `_serialize_arg(arg: Any) -> Any`
+Converts OR-Tools objects to JSON-serializable primitives (internal helper).
+
+#### `_deserialize_arg(serialized_arg: Any, var_mapping: Dict[str, Any]) -> Any`
+Re-hydrates primitives back to OR-Tools objects (internal helper).
+
+#### `_create_solving_model() -> _cp.CpModel`
+Builds a clean CpModel with only enabled constraints & objectives (internal helper).
+
+## Cross-References
+
+### Imports from other modules:
+- **`ortools.sat.python.cp_model`** (as `_cp`): Base model functionality
+- **`ortools.sat.cp_model_pb2`**: Protocol buffer definitions
+- **`zipfile`**: Archive creation/reading
+- **`json`**: Metadata serialization
+- **`typing`**: Type annotations (Any, Dict, List, Tuple, Union)
+
+### Exports to other modules:
+This appears to be a mixin class designed to be inherited by model classes, providing persistence capabilities to enhanced CP-SAT models.
+
+### Potential issues:
+- **Circular dependencies**: The class inherits from `_cp.CpModel` but also likely needs to be mixed into classes that extend CpModel
+- **Internal methods**: `_serialize_arg`, `_deserialize_arg`, and `_create_solving_model` are implementation details but are called by public methods
+- **Type completeness**: The serialization/deserialization handles various OR-Tools types but may not cover all possible constraint expressions
+
+## Integration Examples
+
+**Example 1: Basic model persistence**
+```python
+from your_module import EnhancedCpModel
+
+# Create and populate model
+model = EnhancedCpModel()
+x = model.NewIntVar(0, 10, 'x')
+y = model.NewIntVar(0, 10, 'y')
+model.Add(x + y <= 15)
+model.Minimize(x + y)
+
+# Save model
+model.export_to_file('my_model.zip')
+
+# Later, load model
+new_model = EnhancedCpModel()
+new_model.import_from_file('my_model.zip')
+```
+
+**Example 2: Integration with solving workflow**
+```python
+def solve_with_persistence(model, filename):
+    if os.path.exists(filename):
+        model.import_from_file(filename)
+    else:
+        # Build model from scratch
+        build_complex_model(model)
+        model.export_to_file(filename)
+    
+    solver = cp_model.CpSolver()
+    status = solver.Solve(model)
+    return status, solver
+```
+
+**Example 3: Model debugging and analysis**
+```python
+# Save model for later analysis
+model.export_to_file('debug_model.zip')
+
+# Load in different session for analysis
+analysis_model = EnhancedCpModel()
+analysis_model.import_from_file('debug_model.zip')
+print(f"Model has {len(analysis_model._variables)} variables")
+print(f"Model has {len(analysis_model._constraints)} constraints")
+```
+
+The module provides complete round-trip serialization, preserving variable definitions, constraints, objectives, and metadata tags while maintaining Python object consistency.

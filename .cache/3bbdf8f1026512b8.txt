@@ -1,0 +1,19 @@
+**Primary Purpose:** This file implements a comprehensive constraint management system for CP-SAT modeling, providing a wrapper around OR-Tools' constraint programming functionality with enhanced metadata tracking and constraint recreation capabilities.
+
+**Key Responsibilities:**
+- Provides a mixin class (`_ConstraintsMixin`) that extends OR-Tools' `CpModel` with constraint creation methods
+- Manages constraint metadata through `ConstraintInfo` objects for debugging and enable/disable functionality
+- Implements constraint proxies (`_ConstraintProxy`) to capture user configuration calls like `OnlyEnforceIf` and `WithName`
+- Supports constraint recreation in different models through `_recreate_constraint_in_model` with variable mapping
+- Handles 25+ different constraint types including linear, boolean, circuit, automaton, and scheduling constraints
+- Maintains enforcement literals and constraint registration for advanced constraint management
+
+**Architecture Role:** This serves as a core middleware component between the user-facing API and the underlying OR-Tools CP-SAT engine. It acts as an enhancement layer that adds metadata tracking, constraint recreation capabilities, and a unified interface for constraint management while maintaining compatibility with the base OR-Tools functionality.
+
+**Notable Patterns:**
+- **Decorator Pattern:** The `_ConstraintProxy` wraps OR-Tools constraints to intercept configuration calls
+- **Mixin Pattern:** `_ConstraintsMixin` extends OR-Tools' `CpModel` without direct inheritance
+- **Registry Pattern:** Maintains a registry of constraints with metadata for management and recreation
+- **Factory Pattern:** Multiple `Add*` methods act as factories for different constraint types
+- **Visitor Pattern:** The `map_arg` function recursively maps variables through nested structures during constraint recreation
+- **Proxy Pattern:** Constraint methods return proxies that capture user configuration before creating actual constraints

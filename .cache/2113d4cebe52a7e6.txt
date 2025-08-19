@@ -1,0 +1,197 @@
+## Module Purpose
+This module provides enhanced constraint management for Google OR-Tools CP-SAT by wrapping constraints with metadata for debugging, enable/disable functionality, and constraint recreation. It extends the base CpModel with tracking capabilities while maintaining full API compatibility.
+
+## Public API
+
+### ConstraintInfo Class
+**Purpose**: Wrapper around a single constraint with metadata for debugging/enable/disable functionality.
+
+**Usage pattern**:
+```python
+# Typically created internally by _ConstraintsMixin
+from model.constraints import ConstraintInfo
+
+# Not typically instantiated directly by users
+```
+
+**Method signatures**:
+```python
+def __init__(
+    self,
+    name: str,
+    original_args: Any,
+    constraint_type: str,
+    ortools_ct: _cp.Constraint,
+    enable_var: _cp.IntVar,
+) -> None:
+```
+
+**Attributes**:
+- `name`: Constraint identifier
+- `original_args`: Original arguments used to create the constraint
+- `constraint_type`: Type of constraint (e.g., "Linear", "AllDifferent")
+- `ortools_ct`: The underlying OR-Tools constraint object
+- `enable_var`: Boolean variable controlling constraint enforcement
+- `user_enforcement_literals`: List of literals for conditional enforcement
+
+### _ConstraintProxy Class
+**Purpose**: Proxy returned by Add* methods to capture user calls like OnlyEnforceIf and WithName.
+
+**Usage pattern**:
+```python
+# Returned by constraint creation methods
+constraint = model.Add(x + y == 5)
+constraint.OnlyEnforceIf([a, b])  # Returns self for chaining
+constraint.WithName("my_constraint")
+```
+
+**Method signatures**:
+```python
+def OnlyEnforceIf(self, lits) -> "_ConstraintProxy":
+    """Conditionally enforce constraint based on literals."""
+
+def WithName(self, name: str) -> "_ConstraintProxy":
+    """Set constraint name."""
+
+def __getattr__(self, attr: str) -> Any:
+    """Delegate unknown attributes to underlying constraint."""
+```
+
+### _ConstraintsMixin Class
+**Purpose**: Mixin that extends CpModel with all constraint-creation helpers and metadata tracking.
+
+**Usage pattern**:
+```python
+from model.constraints import _ConstraintsMixin
+from ortools.sat.python import cp_model
+
+class EnhancedModel(_ConstraintsMixin, cp_model.CpModel):
+    pass
+
+model = EnhancedModel()
+```
+
+**Key constraint creation methods** (all return `_ConstraintProxy`):
+```python
+# Linear constraints
+Add(ct, name: Optional[str] = None)
+AddLinearConstraint(linear_expr: _cp.LinearExprT, lb: int, ub: int, name: Optional[str] = None)
+AddLinearExpressionInDomain(linear_expr: _cp.LinearExprT, domain: _cp.Domain, name: Optional[str] = None)
+
+# Global constraints
+AddAllDifferent(variables: Sequence[_cp.LinearExprT], name: Optional[str] = None)
+AddElement(index: _cp.LinearExprT, variables: Sequence[_cp.LinearExprT], target: _cp.LinearExprT, name: Optional[str] = None)
+AddCircuit(arcs: Sequence[Tuple[int, int, _cp.LiteralT]], name: Optional[str] = None)
+AddMultipleCircuit(arcs: Sequence[Tuple[int, int, _cp.LiteralT]], name: Optional[str] = None)
+
+# Table constraints
+AddAllowedAssignments(variables: Sequence[_cp.IntVar], tuples_list: Sequence[Sequence[int]], name: Optional[str] = None)
+AddForbiddenAssignments(variables: Sequence[_cp.IntVar], tuples_list: Sequence[Sequence[int]], name: Optional[str] = None)
+
+# Automaton and inverse constraints
+AddAutomaton(transition_variables: Sequence[_cp.IntVar], starting_state: int, 
+             final_states: Sequence[int], transition_triples: Sequence[Tuple[int, int, int]], 
+             name: Optional[str] = None)
+AddInverse(variables: Sequence[_cp.IntVar], inverse_variables: Sequence[_cp.IntVar], name: Optional[str] = None)
+
+# Reservoir constraint
+AddReservoirConstraint(times: Sequence[_cp.LinearExprT], level_changes: Sequence[_cp.LinearExprT], 
+                       min_level: int, max_level: int, name: Optional[str] = None)
+
+# Expression constraints
+AddMinEquality(target: _cp.LinearExprT, variables: Sequence[_cp.LinearExprT], name: Optional[str] = None)
+AddMaxEquality(target: _cp.LinearExprT, variables: Sequence[_cp.LinearExprT], name: Optional[str] = None)
+AddMultiplicationEquality(target: _cp.LinearExprT, variables: Sequence[_cp.LinearExprT], name: Optional[str] = None)
+AddDivisionEquality(target: _cp.LinearExprT, numerator: _cp.LinearExprT, denominator: _cp.LinearExprT, name: Optional[str] = None)
+AddAbsEquality(target: _cp.LinearExprT, variable: _cp.LinearExprT, name: Optional[str] = None)
+AddModuloEquality(target: _cp.LinearExprT, variable: _cp.LinearExprT, modulo: _cp.LinearExprT, name: Optional[str] = None)
+
+# Boolean constraints
+AddBoolOr(literals: Sequence[_cp.LiteralT], name: Optional[str] = None)
+AddBoolAnd(literals: Sequence[_cp.LiteralT], name: Optional[str] = None)
+AddBoolXor(literals: Sequence[_cp.LiteralT], name: Optional[str] = None)
+AddImplication(a: _cp.LiteralT, b: _cp.LiteralT, name: Optional[str] = None)
+
+# Interval constraints
+AddNoOverlap(intervals: Sequence[_cp.IntervalVar], name: Optional[str] = None)
+AddNoOverlap2D(x_intervals: Sequence[_cp.IntervalVar], y_intervals: Sequence[_cp.IntervalVar], name: Optional[str] = None)
+AddCumulative(intervals: Sequence[_cp.IntervalVar], demands: Sequence[_cp.LinearExprT], 
+              capacity: _cp.LinearExprT, name: Optional[str] = None)
+```
+
+**Internal methods**:
+```python
+def _register_constraint(self, constraint: _cp.Constraint, original_args: Any, 
+                        constraint_type: str, name: Optional[str], 
+                        enforce_enable_var: bool = False) -> _cp.Constraint:
+    """Register a constraint with full metadata."""
+
+def _recreate_constraint_in_model(self, model: _cp.CpModel, constraint_info: ConstraintInfo, 
+                                 var_mapping: Dict[str, Any]) -> None:
+    """Recreate a constraint in another model using variable mapping."""
+
+def _ensure_constraints(self) -> dict[str, ConstraintInfo]:
+    """Lazy-initialize constraint registry."""
+```
+
+## Cross-References
+
+### Imports from other modules
+- `ortools.sat.python.cp_model` (as `_cp`): Core OR-Tools CP-SAT functionality
+- `typing` types: `Any`, `List`, `Optional`, `Sequence`, `Tuple`, `Dict`
+
+### Exports to other modules
+- `ConstraintInfo`: For constraint metadata tracking
+- `_ConstraintProxy`: For constraint method chaining
+- `_ConstraintsMixin`: For extending CpModel with enhanced constraint capabilities
+
+### Potential issues
+- The module assumes `_cp` refers to `ortools.sat.python.cp_model` but this isn't explicitly shown in the imports
+- Circular dependency risk if other modules depend heavily on constraint metadata
+- No explicit error handling for missing `_constraints` attribute in mixin usage
+
+## Integration Examples
+
+### Basic usage with enhanced model
+```python
+from model.constraints import _ConstraintsMixin
+from ortools.sat.python import cp_model
+
+class TrackingModel(_ConstraintsMixin, cp_model.CpModel):
+    pass
+
+# Create model with constraint tracking
+model = TrackingModel()
+x = model.NewIntVar(0, 10, 'x')
+y = model.NewIntVar(0, 10, 'y')
+
+# Create constraint with metadata tracking
+constraint = model.Add(x + y == 10)
+constraint.OnlyEnforceIf([model.NewBoolVar('enable')])
+constraint.WithName("sum_constraint")
+
+# Access constraint metadata
+constraint_info = model._constraints["sum_constraint"]
+print(f"Constraint type: {constraint_info.constraint_type}")
+```
+
+### Constraint recreation for model copying
+```python
+# Copy constraints to a new model
+new_model = TrackingModel()
+var_mapping = {'x': new_x, 'y': new_y}  # Map old vars to new vars
+
+for constraint_name, info in model._constraints.items():
+    model._recreate_constraint_in_model(new_model, info, var_mapping)
+```
+
+### Debugging and analysis
+```python
+# Analyze all constraints in the model
+for name, info in model._constraints.items():
+    print(f"{name}: {info.constraint_type}")
+    print(f"  Enabled by: {info.enable_var}")
+    print(f"  User conditions: {info.user_enforcement_literals}")
+```
+
+The module provides a powerful foundation for constraint management, debugging, and model transformation while maintaining full compatibility with the standard OR-Tools API.

@@ -1,0 +1,17 @@
+**Primary Purpose:** This file provides serialization/deserialization capabilities for an enhanced CP-SAT model, allowing complete model persistence to disk and restoration with full metadata preservation.
+
+**Key Responsibilities:**
+- Exporting complete model state (proto + metadata) to ZIP archives containing both binary and JSON data
+- Importing and reconstructing models from saved files with full object consistency
+- Converting OR-Tools objects to JSON-serializable primitives and back
+- Creating clean solving models with only enabled constraints and objectives
+- Managing variable mapping and expression translation between model instances
+
+**Architecture Role:** Serves as a persistence layer and I/O utility module for the enhanced CP-SAT modeling system. It acts as a bridge between the high-level modeling interface and the underlying OR-Tools infrastructure, enabling model checkpointing, sharing, and debugging capabilities.
+
+**Notable Patterns:**
+- **Composite Pattern:** Handles serialization/deserialization of complex expression trees through recursive processing
+- **Adapter Pattern:** Translates between OR-Tools native objects and JSON-serializable representations
+- **Factory Pattern:** Recreates constraints and objectives dynamically using metadata and reflection
+- **Strategy Pattern:** Different serialization/deserialization methods for various OR-Tools object types
+- **Metadata Preservation:** Maintains Python-side consistency through comprehensive metadata storage alongside the raw proto

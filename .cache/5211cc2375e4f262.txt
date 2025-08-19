@@ -1,0 +1,19 @@
+**Primary Purpose:** This file provides a comprehensive set of constraint programming tools for creating boolean indicator variables that represent various logical and relational conditions within a CP-SAT model, enabling complex constraint formulations.
+
+**Key Responsibilities:**
+- Creating boolean indicator variables for relational comparisons (≥, ≤, >, <, =, ≠)
+- Implementing logical operations (AND, OR) as boolean variables
+- Handling interval relationships (point containment, overlap, containment)
+- Creating conditional min/max variables subject to boolean constraints
+- Implementing complex logical operations with constraint dependencies
+- Managing constraint tagging and metadata for debugging and analysis
+
+**Architecture Role:** This serves as a core utility module in a constraint programming system, providing foundational building blocks for higher-level constraint formulations. It acts as an abstraction layer between the raw CP-SAT API and domain-specific constraint logic, making complex constraint expressions more manageable and reusable.
+
+**Notable Patterns:**
+- **Builder Pattern:** Each function constructs complex constraint relationships through a consistent interface
+- **Indicator Variable Pattern:** Extensive use of boolean variables to represent complex conditions
+- **Constraint Tagging:** Systematic approach to labeling constraints for debugging and analysis
+- **Template Method Pattern:** Consistent structure across similar constraint types (e.g., all comparison functions follow the same two-constraint pattern)
+- **Domain Abstraction:** Handles both primitive values and interval objects through type checking and adaptation
+- **Composite Pattern:** Functions that combine multiple simpler constraints into complex logical expressions

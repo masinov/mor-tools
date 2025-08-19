@@ -4,15 +4,25 @@ from ortools.sat.python import cp_model as _cp
 import json
 import zipfile
 
-from constructors import EnhancedConstructorsMixin
+from base import EnhancedConstructorsMixin
 
 
 ###############################################################################
 # Helper classes for debugging
 ###############################################################################
 class ConstraintInfo:
-    """Rich wrapper around a single constraint with debugging metadata."""
-    __slots__ = ("name", "original_args", "constraint_type", "ortools_ct", "enable_var", "enabled", "tags")
+    """Wrapper around a single constraint with metadata for debug/enable/disable."""
+
+    __slots__ = (
+        "name",
+        "original_args",
+        "constraint_type",
+        "ortools_ct",
+        "enable_var",
+        "enabled",
+        "tags",
+        "user_enforcement_literals",
+    )
 
     def __init__(
         self,
@@ -23,13 +33,13 @@ class ConstraintInfo:
         enable_var: _cp.IntVar,
     ):
         self.name = name
-        self.original_args = original_args
+        self.original_args = original_args  # tuple/list of arguments used to build ct
         self.constraint_type = constraint_type
-        self.ortools_ct = ortools_ct
-        self.enable_var = enable_var
-        self.enabled = True
+        self.ortools_ct = ortools_ct        # the actual OR-Tools Constraint
+        self.enable_var = enable_var        # _enable_<name>, not attached to ct
+        self.enabled = True                 # logical flag; solver wrapper enforces it
         self.tags: set[str] = set()
-
+        self.user_enforcement_literals: List[_cp.LiteralT] = []  # from OnlyEnforceIf()
 
 class VariableInfo:
     """Rich wrapper around variables with metadata."""
@@ -51,6 +61,31 @@ class ObjectiveInfo:
         self.linear_expr = linear_expr
         self.enabled = True
         self.name = name or f"objective_{objective_type.lower()}"
+
+################################################################################
+# Constraint Proxy for user-friendly constraint manipulation
+
+class _ConstraintProxy:
+    """Proxy returned by Add()/etc. to capture user calls like OnlyEnforceIf."""
+
+    def __init__(self, ct: _cp.Constraint, info: ConstraintInfo):
+        self._ct = ct
+        self._info = info
+
+    def OnlyEnforceIf(self, lits):
+        if not isinstance(lits, (list, tuple)):
+            lits = [lits]
+        self._info.user_enforcement_literals.extend(lits)
+        self._ct.OnlyEnforceIf(lits)
+        return self
+
+    def WithName(self, name: str):
+        self._ct.WithName(name)
+        self._info.name = name
+        return self
+
+    def __getattr__(self, attr):
+        return getattr(self._ct, attr)
 
 
 ###############################################################################
@@ -81,44 +116,73 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
     
     def clone(self) -> 'EnhancedCpModel':
         """
-        Create a complete clone of this model including all metadata.
-        
-        Returns:
-            A new EnhancedCpModel instance that is an exact copy of this model.
+        Create a complete clone by recreating variables, constraints, and objectives.
         """
         cloned = EnhancedCpModel()
-        
-        # Copy the underlying proto
-        cloned._clone_proto_from(self)
-        
-        # Copy metadata with adjusted variable references
-        cloned._clone_metadata_from(self)
-        
+        var_mapping = {}
+
+        # Recreate variables (non-intervals first to avoid dependency issues)
+        for name, info in self._variables.items():
+            if info.var_type in ("IntervalVar", "OptionalIntervalVar"):
+                continue
+            args = info.creation_args
+            if info.var_type == "IntVar":
+                lb, ub, _ = args
+                new_var = cloned.NewIntVar(lb, ub, name)
+            elif info.var_type == "BoolVar":
+                new_var = cloned.NewBoolVar(name)
+            elif info.var_type == "Constant":
+                value, = args
+                new_var = cloned.NewConstant(value)
+            var_mapping[name] = new_var
+
+        # Recreate interval variables (depend on expressions)
+        for name, info in self._variables.items():
+            if info.var_type not in ("IntervalVar", "OptionalIntervalVar"):
+                continue
+            args = info.creation_args
+            if info.var_type == "IntervalVar":
+                start, size, end, _ = args
+                new_start = cloned._map_expr_to_new_model(start, var_mapping)
+                new_size = cloned._map_expr_to_new_model(size, var_mapping)
+                new_end = cloned._map_expr_to_new_model(end, var_mapping)
+                new_var = cloned.NewIntervalVar(new_start, new_size, new_end, name)
+            else:
+                start, size, end, is_present, _ = args
+                new_start = cloned._map_expr_to_new_model(start, var_mapping)
+                new_size = cloned._map_expr_to_new_model(size, var_mapping)
+                new_end = cloned._map_expr_to_new_model(end, var_mapping)
+                new_is_present = cloned._map_expr_to_new_model(is_present, var_mapping)
+                new_var = cloned.NewOptionalIntervalVar(new_start, new_size, new_end, new_is_present, name)
+            var_mapping[name] = new_var
+
+        # Recreate constraints
+        for info in self._constraints.values():
+            cloned._recreate_constraint_in_model(cloned, info, var_mapping)
+
+        # Copy constraint metadata states (enabled, tags, etc.)
+        for name, original_info in self._constraints.items():
+            new_info = cloned._constraints[name]
+            new_info.enabled = original_info.enabled
+            new_info.tags = original_info.tags.copy()
+            # user_enforcement_literals are already replayed in recreation
+
+        # Recreate objectives
+        for obj in self._objectives:
+            new_expr = cloned._map_expr_to_new_model(obj.linear_expr, var_mapping)
+            new_obj = ObjectiveInfo(obj.objective_type, new_expr, obj.name)
+            new_obj.enabled = obj.enabled
+            cloned._objectives.append(new_obj)
+            if obj.objective_type == "Minimize":
+                cloned.Minimize(new_expr)
+            elif obj.objective_type == "Maximize":
+                cloned.Maximize(new_expr)
+
+        # Copy counters
+        cloned._constraint_counter = self._constraint_counter
+        cloned._variable_counter = self._variable_counter
+
         return cloned
-    
-    def copy_from(self, other: Union['EnhancedCpModel', _cp.CpModel]) -> None:
-        """
-        Copy the contents of another model into this model.
-        
-        Args:
-            other: The model to copy from. Can be EnhancedCpModel or regular CpModel.
-        """
-        # Clear current model
-        self._clear_model()
-        
-        if isinstance(other, EnhancedCpModel):
-            # Copy from another EnhancedCpModel - preserve all metadata
-            self._clone_proto_from(other)
-            self._clone_metadata_from(other)
-        else:
-            # Copy from regular CpModel - only copy the proto
-            self._clone_proto_from(other)
-            # Reset metadata since we don't have it from the source
-            self._constraints.clear()
-            self._variables.clear()
-            self._objectives.clear()
-            self._constraint_counter = 0
-            self._variable_counter = 0
     
     def _clear_model(self) -> None:
         """Clear all model contents and metadata."""
@@ -131,66 +195,6 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
         self._objectives.clear()
         self._constraint_counter = 0
         self._variable_counter = 0
-    
-    def _clone_proto_from(self, other: _cp.CpModel) -> None:
-        """
-        Clone the protocol buffer from another CpModel.
-        
-        Args:
-            other: The source model to clone from.
-        """
-        # Get the proto from the source model
-        source_proto = other.Proto()
-        
-        # Create a copy of the proto and merge it into this model
-        self.Proto().CopyFrom(source_proto)
-    
-    def _clone_metadata_from(self, other: 'EnhancedCpModel') -> None:
-        """
-        Clone metadata from another EnhancedCpModel using name-based mapping.
-        
-        Args:
-            other: The source EnhancedCpModel to clone metadata from.
-        """
-        # Copy counters
-        self._constraint_counter = other._constraint_counter
-        self._variable_counter = other._variable_counter
-        
-        # Clone variables by name - keep original references since proto was copied
-        self._variables = {}
-        for var_name, var_info in other._variables.items():
-            self._variables[var_name] = VariableInfo(
-                name=var_info.name,
-                var_type=var_info.var_type,
-                ortools_var=var_info.ortools_var,
-                creation_args=var_info.creation_args
-            )
-        
-        # Clone constraints by name - keep original references since proto was copied
-        self._constraints = {}
-        for constraint_name, constraint_info in other._constraints.items():
-            new_constraint_info = ConstraintInfo(
-                name=constraint_info.name,
-                original_args=constraint_info.original_args,
-                constraint_type=constraint_info.constraint_type,
-                ortools_ct=constraint_info.ortools_ct,
-                enable_var=constraint_info.enable_var,
-            )
-            
-            # Copy enabled state and tags
-            new_constraint_info.enabled = constraint_info.enabled
-            new_constraint_info.tags = constraint_info.tags.copy()
-            
-            self._constraints[constraint_name] = new_constraint_info
-        
-        # Clone objectives
-        self._objectives = []
-        for obj_info in other._objectives:
-            self._objectives.append(ObjectiveInfo(
-                objective_type=obj_info.objective_type,
-                linear_expr=obj_info.linear_expr,
-                name=obj_info.name
-            ))
 
     ###########################################################################
     # Variable Creation - All CP-SAT Variable Types
@@ -266,12 +270,16 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
         return var
 
     def NewConstant(self, value: int) -> _cp.IntVar:
-        """Create a new constant."""
-        var = super().NewConstant(value)
-        # Constants get unique names to avoid conflicts
-        name = f"_const_{value}_{id(var)}"
-        self._variable_counter += 1
+        """Create a new constant with a unique name."""
+        base_name = f"_const_{value}"
+        name = base_name
+        counter = self._variable_counter
+        while name in self._variables or self.get_variable_by_name(name) is not None:
+            counter += 1
+            name = f"{base_name}_{counter}"
+        self._variable_counter = counter + 1
         
+        var = super().NewConstant(value)
         self._variables[name] = VariableInfo(
             name=name,
             var_type="Constant",
@@ -410,7 +418,16 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
             constraint_type="MaxEquality",
             name=name
         )
-
+    
+    def AddMultiplicationEquality(self, target: _cp.LinearExprT, variables: Sequence[_cp.LinearExprT], name: Optional[str] = None) -> _cp.Constraint:
+        """Add a constraint that target == variables[0] * variables[1] * ..."""
+        return self._register_constraint(
+            constraint=super().AddMultiplicationEquality(target, variables),
+            original_args=(target, tuple(variables)),
+            constraint_type="MultiplicationEquality",
+            name=name
+        )
+    
     def AddDivisionEquality(self, target: _cp.LinearExprT, numerator: _cp.LinearExprT, denominator: _cp.LinearExprT, name: Optional[str] = None) -> _cp.Constraint:
         """Add a constraint that target == numerator // denominator."""
         return self._register_constraint(
@@ -518,12 +535,11 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
         self._objectives.append(ObjectiveInfo("Maximize", obj, name))
 
     def enable_objective(self, name: str) -> None:
-        """Enable an objective by name."""
+        """Enable an objective by name, disabling all others."""
         for obj in self._objectives:
-            if obj.name == name:
-                obj.enabled = True
-                return
-        raise ValueError(f"Objective '{name}' not found")
+            obj.enabled = (obj.name == name)
+        if not any(obj.enabled for obj in self._objectives):
+            raise ValueError(f"Objective '{name}' not found")
 
     def disable_objective(self, name: str) -> None:
         """Disable an objective by name."""
@@ -533,18 +549,12 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
                 return
         raise ValueError(f"Objective '{name}' not found")
 
-    def get_enabled_objectives(self) -> List[ObjectiveInfo]:
+    def get_enabled_objective(self) -> List[ObjectiveInfo]:
         """Get all currently enabled objectives."""
         enabled = [obj for obj in self._objectives if obj.enabled]
         if len(enabled) > 1:
-            import warnings
-            warnings.warn(
-                f"Multiple objectives enabled ({len(enabled)}); "
-                "OR-Tools will use only the last one.",
-                RuntimeWarning,
-                stacklevel=2
-            )
-        return enabled
+            raise RuntimeError("Multiple objectives enabled; only one is allowed")
+        return enabled[0] if enabled else None
 
     ###########################################################################
     # Constraint Management
@@ -683,12 +693,10 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
                     continue
 
         # Add enabled objectives
-        enabled_objectives = self.get_enabled_objectives()
-        if enabled_objectives:
-            # Use the last enabled objective (OR-Tools only supports one objective)
-            last_obj = enabled_objectives[-1]
-            mapped_expr = self._map_expr_to_new_model(last_obj.linear_expr, var_name_to_new_var)
-            if last_obj.objective_type == "Minimize":
+        enabled_objective = self.get_enabled_objective()
+        if enabled_objective:
+            mapped_expr = self._map_expr_to_new_model(enabled_objective.linear_expr, var_name_to_new_var)
+            if enabled_objective.objective_type == "Minimize":
                 solving_model.Minimize(mapped_expr)
             else:
                 solving_model.Maximize(mapped_expr)
@@ -723,10 +731,17 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
         # Fallback for anything else
         return expr
     
-    def _recreate_constraint_in_model(self, model: _cp.CpModel, constraint_info: ConstraintInfo, var_mapping: Dict[str, Any]) -> None:
+    def _recreate_constraint_in_model(
+        self,
+        model: _cp.CpModel,
+        constraint_info: ConstraintInfo,
+        var_mapping: Dict[str, Any]
+    ) -> None:
         """
-        Recreate a constraint in the new model with mapped variables.
-        
+        Recreate a constraint in a new model with mapped variables.
+        - Replays only user-provided enforcements.
+        - Does not attach enable_var; solver/debug will handle that.
+
         Args:
             model: The target model to add the constraint to
             constraint_info: The constraint info from the original model
@@ -734,144 +749,188 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
         """
         constraint_type = constraint_info.constraint_type
         args = constraint_info.original_args
-        
-        # Map the arguments to the new model
+
+        # Helper to map arguments, handling both serialized (str/dict/list) and OR-Tools objects
+        def map_arg(arg):
+            if isinstance(arg, str) and arg in var_mapping:
+                return var_mapping[arg]
+            elif isinstance(arg, dict) and arg.get("type") == "LinearExpr":
+                vars_coeffs = arg.get("vars", [])
+                constant = arg.get("constant", 0)
+                vars = [var_mapping[var_name] for var_name, _ in vars_coeffs]
+                coeffs = [coeff for _, coeff in vars_coeffs]
+                return _cp.LinearExpr.WeightedSum(vars, coeffs) + constant
+            elif isinstance(arg, (list, tuple)) and all(isinstance(a, (int, str)) for a in arg):
+                return [map_arg(a) for a in arg]
+            elif isinstance(arg, (list, tuple)) and all(isinstance(a, (list, tuple)) for a in arg):
+                return [tuple(map_arg(b) for b in a) for a in arg]
+            elif isinstance(arg, (int, bool)):
+                return arg
+            elif isinstance(arg, _cp.Domain):
+                return arg  # Domain objects are not mapped, assumed to be unchanged
+            else:
+                return self._map_expr_to_new_model(arg, var_mapping)
+
+        # Recreate the constraint based on type
         if constraint_type == "Generic":
-            mapped_expr = self._map_expr_to_new_model(args, var_mapping)
-            model.Add(mapped_expr)
-            
+            if isinstance(args, str) and args in var_mapping:
+                mapped_expr = var_mapping[args]
+            else:
+                mapped_expr = map_arg(args)
+            new_ct = model.Add(mapped_expr)
+
         elif constraint_type == "LinearConstraint":
             linear_expr, lb, ub = args
-            mapped_expr = self._map_expr_to_new_model(linear_expr, var_mapping)
-            model.AddLinearConstraint(mapped_expr, lb, ub)
-            
+            mapped_expr = map_arg(linear_expr)
+            new_ct = model.AddLinearConstraint(mapped_expr, lb, ub)
+
         elif constraint_type == "LinearExpressionInDomain":
             linear_expr, domain = args
-            mapped_expr = self._map_expr_to_new_model(linear_expr, var_mapping)
-            model.AddLinearExpressionInDomain(mapped_expr, domain)
-            
+            mapped_expr = map_arg(linear_expr)
+            # Domain may be serialized as list of intervals
+            mapped_domain = _cp.Domain.FromIntervals(domain) if isinstance(domain, (list, tuple)) else domain
+            new_ct = model.AddLinearExpressionInDomain(mapped_expr, mapped_domain)
+
         elif constraint_type == "AllDifferent":
             variables = args
-            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
-            model.AddAllDifferent(mapped_vars)
-            
+            mapped_vars = [map_arg(var) for var in variables]
+            new_ct = model.AddAllDifferent(mapped_vars)
+
         elif constraint_type == "Element":
             index, variables, target = args
-            mapped_index = self._map_expr_to_new_model(index, var_mapping)
-            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
-            mapped_target = self._map_expr_to_new_model(target, var_mapping)
-            model.AddElement(mapped_index, mapped_vars, mapped_target)
-            
+            mapped_index = map_arg(index)
+            mapped_vars = [map_arg(var) for var in variables]
+            mapped_target = map_arg(target)
+            new_ct = model.AddElement(mapped_index, mapped_vars, mapped_target)
+
         elif constraint_type == "Circuit":
             arcs = args
-            mapped_arcs = [(head, tail, self._map_expr_to_new_model(lit, var_mapping)) for head, tail, lit in arcs]
-            model.AddCircuit(mapped_arcs)
-            
+            mapped_arcs = [(head, tail, map_arg(lit)) for head, tail, lit in arcs]
+            new_ct = model.AddCircuit(mapped_arcs)
+
         elif constraint_type == "MultipleCircuit":
             arcs = args
-            mapped_arcs = [(head, tail, self._map_expr_to_new_model(lit, var_mapping)) for head, tail, lit in arcs]
-            model.AddMultipleCircuit(mapped_arcs)
-            
+            mapped_arcs = [(head, tail, map_arg(lit)) for head, tail, lit in arcs]
+            new_ct = model.AddMultipleCircuit(mapped_arcs)
+
         elif constraint_type == "AllowedAssignments":
             variables, tuples_list = args
-            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
-            model.AddAllowedAssignments(mapped_vars, tuples_list)
-            
+            mapped_vars = [map_arg(var) for var in variables]
+            mapped_tuples = tuples_list if isinstance(tuples_list, (list, tuple)) else tuples_list
+            new_ct = model.AddAllowedAssignments(mapped_vars, mapped_tuples)
+
         elif constraint_type == "ForbiddenAssignments":
             variables, tuples_list = args
-            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
-            model.AddForbiddenAssignments(mapped_vars, tuples_list)
-            
+            mapped_vars = [map_arg(var) for var in variables]
+            mapped_tuples = tuples_list if isinstance(tuples_list, (list, tuple)) else tuples_list
+            new_ct = model.AddForbiddenAssignments(mapped_vars, mapped_tuples)
+
         elif constraint_type == "Automaton":
             transition_variables, starting_state, final_states, transition_triples = args
-            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in transition_variables]
-            model.AddAutomaton(mapped_vars, starting_state, final_states, transition_triples)
-            
+            mapped_vars = [map_arg(var) for var in transition_variables]
+            mapped_final_states = final_states if isinstance(final_states, (list, tuple)) else final_states
+            mapped_triples = transition_triples if isinstance(transition_triples, (list, tuple)) else transition_triples
+            new_ct = model.AddAutomaton(mapped_vars, starting_state, mapped_final_states, mapped_triples)
+
         elif constraint_type == "Inverse":
             variables, inverse_variables = args
-            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
-            mapped_inv_vars = [self._map_expr_to_new_model(var, var_mapping) for var in inverse_variables]
-            model.AddInverse(mapped_vars, mapped_inv_vars)
-            
+            mapped_vars = [map_arg(var) for var in variables]
+            mapped_inv_vars = [map_arg(var) for var in inverse_variables]
+            new_ct = model.AddInverse(mapped_vars, mapped_inv_vars)
+
         elif constraint_type == "ReservoirConstraint":
             times, level_changes, min_level, max_level = args
-            mapped_times = [self._map_expr_to_new_model(t, var_mapping) for t in times]
-            mapped_changes = [self._map_expr_to_new_model(lc, var_mapping) for lc in level_changes]
-            model.AddReservoirConstraint(mapped_times, mapped_changes, min_level, max_level)
-            
+            mapped_times = [map_arg(t) if isinstance(t, (int, str)) else self._map_expr_to_new_model(t, var_mapping) for t in times]
+            mapped_changes = [map_arg(lc) if isinstance(lc, (int, str)) else self._map_expr_to_new_model(lc, var_mapping) for lc in level_changes]
+            new_ct = model.AddReservoirConstraint(mapped_times, mapped_changes, min_level, max_level)
+
         elif constraint_type == "MinEquality":
             target, variables = args
-            mapped_target = self._map_expr_to_new_model(target, var_mapping)
-            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
-            model.AddMinEquality(mapped_target, mapped_vars)
-            
+            mapped_target = map_arg(target)
+            mapped_vars = [map_arg(var) for var in variables]
+            new_ct = model.AddMinEquality(mapped_target, mapped_vars)
+
         elif constraint_type == "MaxEquality":
             target, variables = args
-            mapped_target = self._map_expr_to_new_model(target, var_mapping)
-            mapped_vars = [self._map_expr_to_new_model(var, var_mapping) for var in variables]
-            model.AddMaxEquality(mapped_target, mapped_vars)
-            
+            mapped_target = map_arg(target)
+            mapped_vars = [map_arg(var) for var in variables]
+            new_ct = model.AddMaxEquality(mapped_target, mapped_vars)
+
         elif constraint_type == "DivisionEquality":
             target, numerator, denominator = args
-            mapped_target = self._map_expr_to_new_model(target, var_mapping)
-            mapped_num = self._map_expr_to_new_model(numerator, var_mapping)
-            mapped_den = self._map_expr_to_new_model(denominator, var_mapping)
-            model.AddDivisionEquality(mapped_target, mapped_num, mapped_den)
-            
+            mapped_target = map_arg(target)
+            mapped_num = map_arg(numerator)
+            mapped_den = map_arg(denominator)
+            new_ct = model.AddDivisionEquality(mapped_target, mapped_num, mapped_den)
+
+        elif constraint_type == "MultiplicationEquality":
+            target, variables = args
+            mapped_target = map_arg(target)
+            mapped_vars = [map_arg(var) for var in variables]
+            new_ct = model.AddMultiplicationEquality(mapped_target, mapped_vars)
+
         elif constraint_type == "AbsEquality":
             target, variable = args
-            mapped_target = self._map_expr_to_new_model(target, var_mapping)
-            mapped_var = self._map_expr_to_new_model(variable, var_mapping)
-            model.AddAbsEquality(mapped_target, mapped_var)
-            
+            mapped_target = map_arg(target)
+            mapped_var = map_arg(variable)
+            new_ct = model.AddAbsEquality(mapped_target, mapped_var)
+
         elif constraint_type == "ModuloEquality":
             target, variable, modulo = args
-            mapped_target = self._map_expr_to_new_model(target, var_mapping)
-            mapped_var = self._map_expr_to_new_model(variable, var_mapping)
-            mapped_mod = self._map_expr_to_new_model(modulo, var_mapping)
-            model.AddModuloEquality(mapped_target, mapped_var, mapped_mod)
-            
+            mapped_target = map_arg(target)
+            mapped_var = map_arg(variable)
+            mapped_mod = map_arg(modulo)
+            new_ct = model.AddModuloEquality(mapped_target, mapped_var, mapped_mod)
+
         elif constraint_type == "BoolOr":
             literals = args
-            mapped_literals = [self._map_expr_to_new_model(lit, var_mapping) for lit in literals]
-            model.AddBoolOr(mapped_literals)
-            
+            mapped_literals = [map_arg(lit) for lit in literals]
+            new_ct = model.AddBoolOr(mapped_literals)
+
         elif constraint_type == "BoolAnd":
             literals = args
-            mapped_literals = [self._map_expr_to_new_model(lit, var_mapping) for lit in literals]
-            model.AddBoolAnd(mapped_literals)
-            
+            mapped_literals = [map_arg(lit) for lit in literals]
+            new_ct = model.AddBoolAnd(mapped_literals)
+
         elif constraint_type == "BoolXor":
             literals = args
-            mapped_literals = [self._map_expr_to_new_model(lit, var_mapping) for lit in literals]
-            model.AddBoolXor(mapped_literals)
-            
+            mapped_literals = [map_arg(lit) for lit in literals]
+            new_ct = model.AddBoolXor(mapped_literals)
+
         elif constraint_type == "Implication":
             a, b = args
-            mapped_a = self._map_expr_to_new_model(a, var_mapping)
-            mapped_b = self._map_expr_to_new_model(b, var_mapping)
-            model.AddImplication(mapped_a, mapped_b)
-            
+            mapped_a = map_arg(a)
+            mapped_b = map_arg(b)
+            new_ct = model.AddImplication(mapped_a, mapped_b)
+
         elif constraint_type == "NoOverlap":
             intervals = args
-            mapped_intervals = [self._map_expr_to_new_model(interval, var_mapping) for interval in intervals]
-            model.AddNoOverlap(mapped_intervals)
-            
+            mapped_intervals = [map_arg(interval) for interval in intervals]
+            new_ct = model.AddNoOverlap(mapped_intervals)
+
         elif constraint_type == "NoOverlap2D":
             x_intervals, y_intervals = args
-            mapped_x = [self._map_expr_to_new_model(interval, var_mapping) for interval in x_intervals]
-            mapped_y = [self._map_expr_to_new_model(interval, var_mapping) for interval in y_intervals]
-            model.AddNoOverlap2D(mapped_x, mapped_y)
-            
+            mapped_x = [map_arg(interval) if isinstance(interval, str) else self._map_expr_to_new_model(interval, var_mapping) for interval in x_intervals]
+            mapped_y = [map_arg(interval) if isinstance(interval, str) else self._map_expr_to_new_model(interval, var_mapping) for interval in y_intervals]
+            new_ct = model.AddNoOverlap2D(mapped_x, mapped_y)
+
         elif constraint_type == "Cumulative":
             intervals, demands, capacity = args
-            mapped_intervals = [self._map_expr_to_new_model(interval, var_mapping) for interval in intervals]
-            mapped_demands = [self._map_expr_to_new_model(demand, var_mapping) for demand in demands]
-            mapped_capacity = self._map_expr_to_new_model(capacity, var_mapping)
-            model.AddCumulative(mapped_intervals, mapped_demands, mapped_capacity)
-            
+            mapped_intervals = [map_arg(interval) if isinstance(interval, str) else self._map_expr_to_new_model(interval, var_mapping) for interval in intervals]
+            mapped_demands = [map_arg(demand) if isinstance(demand, (int, str)) else self._map_expr_to_new_model(demand, var_mapping) for demand in demands]
+            mapped_capacity = map_arg(capacity) if isinstance(capacity, (int, str)) else self._map_expr_to_new_model(capacity, var_mapping)
+            new_ct = model.AddCumulative(mapped_intervals, mapped_demands, mapped_capacity)
+
         else:
             raise ValueError(f"Unsupported constraint type for recreation: {constraint_type}")
+
+        # Replay user enforcements
+        if constraint_info.user_enforcement_literals:
+            mapped_lits = [
+                self._map_expr_to_new_model(lit, var_mapping)
+                for lit in constraint_info.user_enforcement_literals
+            ]
+            new_ct.OnlyEnforceIf(mapped_lits)
 
     def debug_infeasible(self, solver: Optional[_cp.CpSolver] = None, **solver_params) -> Dict[str, Any]:
         """
@@ -1055,7 +1114,7 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
             "total_variables": len(self._variables),
             "variable_types": variable_types,
             "total_objectives": len(self._objectives),
-            "enabled_objectives": len(self.get_enabled_objectives()),
+            "enabled_objective": len(self.get_enabled_objective()),
             "all_tags": list(set().union(*(info.tags for info in self._constraints.values()))),
         }
 
@@ -1075,10 +1134,8 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
             warnings.append(f"{len(disabled)} constraints are disabled")
 
         # Check for multiple enabled objectives
-        enabled_objectives = self.get_enabled_objectives()
-        if len(enabled_objectives) > 1:
-            warnings.append(f"Multiple objectives enabled ({len(enabled_objectives)}), only the last will be used")
-        
+        enabled_objective = self.get_enabled_objective()
+
         # Check for variables not referenced in any enabled constraint
         # This is a basic check - could be enhanced with proper constraint analysis
         unused_vars = []
@@ -1104,10 +1161,10 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
         constraint: _cp.Constraint,
         original_args: Any,
         constraint_type: str,
-        name: Optional[str]
+        name: Optional[str],
+        enforce_enable_var: bool = False
     ) -> _cp.Constraint:
-        """Register a constraint with full metadata and enable variable."""
-        # Generate unique name if not provided
+        """Register a constraint with full metadata and optional enable variable enforcement."""
         if name is None:
             name = f"{constraint_type.lower()}_{self._constraint_counter}"
         elif name in self._constraints:
@@ -1115,32 +1172,98 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
         
         self._constraint_counter += 1
 
-        # Create enable variable and conditionally enforce constraint
         enable_var = super().NewBoolVar(f"_enable_{name}")
+        if enforce_enable_var:
+            constraint.OnlyEnforceIf(enable_var) # Potential problem with this. Constraint saved, but onlyenforceif not saved.
         
-        # Check if constraint supports conditional enforcement
-        try:
-            constraint.OnlyEnforceIf(enable_var)
-        except AttributeError:
-            # If constraint doesn't support OnlyEnforceIf, we'll handle it differently
-            # For now, just create the enable variable but don't attach it
-            pass
-
-        # Store constraint information
-        self._constraints[name] = ConstraintInfo(
+        info = ConstraintInfo(
             name=name,
             original_args=original_args,
             constraint_type=constraint_type,
             ortools_ct=constraint,
             enable_var=enable_var,
         )
+        self._constraints[name] = info
 
-        return constraint
+        return _ConstraintProxy(constraint, info)
 
     ###########################################################################
     # Export/Import Methods
     ###########################################################################
     
+    def _serialize_arg(self, arg: Any) -> Any:
+        """
+        Serialize an argument to a JSON-compatible format.
+        Handles OR-Tools objects (IntVar, IntervalVar, NotBooleanVariable, LinearExpr, Domain)
+        and nested structures (lists, tuples).
+        """
+        if isinstance(arg, _cp.IntVar):
+            return arg.Name()
+        elif isinstance(arg, _cp.IntervalVar):
+            return arg.Name()
+        elif isinstance(arg, _cp.NotBooleanVariable):
+                return {"type": "NotBoolean", "var": arg.GetVar().Name()}
+        elif isinstance(arg, (int, str, bool)):
+            return arg
+        elif isinstance(arg, _cp.Domain):
+            return list(arg.FlattenedIntervals())
+
+            #Must be properly implemented, incomplete!
+        elif isinstance(arg, _cp.LinearExpr):
+                serialized = {"type": "LinearExpr"}
+                if arg.IsConstant():
+                    serialized["constant"] = int(arg)
+                    serialized["vars"] = []
+                else:
+                    vars_coeffs = []
+                    if hasattr(arg, 'GetVars'):
+                        vars_coeffs = [(var.Name(), coeff) for var, coeff in arg.GetVars()]
+                    else:
+                        # Handle complex expressions (Sum, WeightedSum)
+                        serialized["complex"] = True
+                        serialized["str"] = str(arg)  # Fallback for debugging
+                    serialized["vars"] = vars_coeffs
+                    serialized["constant"] = getattr(arg, 'Offset', 0)
+                return serialized
+        elif isinstance(arg, (list, tuple)):
+            # Handle nested lists/tuples (e.g., for AllowedAssignments, Circuit)
+            return [self._serialize_arg(a) for a in arg]
+        elif isinstance(arg, Sequence) and all(isinstance(a, tuple) for a in arg):
+            # Handle sequence of tuples (e.g., tuples_list in AllowedAssignments)
+            return [tuple(self._serialize_arg(b) for b in a) for a in arg]
+        else:
+            # Fallback: convert to string for debug purposes
+            return str(arg)
+        
+    def _deserialize_arg(self, serialized_arg: Any, var_mapping: Dict[str, Any]) -> Any:
+        """
+        Rehydrate a serialized argument back to an OR-Tools object.
+        Handles dicts for LinearExpr, strings for variables, lists for Domain/tuples, etc.
+        """
+        if isinstance(serialized_arg, str) and serialized_arg in var_mapping:
+            return var_mapping[serialized_arg]
+        elif isinstance(serialized_arg, dict) and serialized_arg.get("type") == "LinearExpr":
+            vars_coeffs = serialized_arg.get("vars", [])
+            constant = serialized_arg.get("constant", 0)
+            vars = [var_mapping[var_name] for var_name, _ in vars_coeffs]
+            coeffs = [coeff for _, coeff in vars_coeffs]
+            return _cp.LinearExpr.WeightedSum(vars, coeffs) + constant
+        elif isinstance(serialized_arg, dict) and "not" in serialized_arg:
+            var = var_mapping[serialized_arg["not"]]
+            return var.Not()
+        elif isinstance(serialized_arg, list) and serialized_arg and isinstance(serialized_arg[0], (int, list)):
+            # For Domain intervals or nested lists
+            if all(isinstance(i, (list, tuple)) and len(i) == 2 for i in serialized_arg):
+                return _cp.Domain.FromIntervals(serialized_arg)
+            return [self._deserialize_arg(a, var_mapping) for a in serialized_arg]
+        elif isinstance(serialized_arg, (list, tuple)):
+            return [self._deserialize_arg(a, var_mapping) for a in serialized_arg]
+        elif isinstance(serialized_arg, (int, bool)):
+            return serialized_arg
+        else:
+            # Fallback: assume it's already an object or unhandled
+            return serialized_arg
+        
     def export_to_file(self, filename: str) -> None:
         """
         Persist the *entire* EnhancedCpModel (proto + metadata) to disk.
@@ -1149,24 +1272,26 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
             model.pb   – raw OR-Tools proto
             meta.json  – all metadata (variables, constraints, objectives, tags, etc.)
         """
-        # 1. Serialise the OR-Tools proto
+        # 1. Serialize the OR-Tools proto
         proto_bytes = self.Proto().SerializeToString()
 
-        # 2. Build a plain-python representation of our metadata
+        # 2. Build a plain-python representation of metadata
         variables_meta: Dict[str, Dict[str, Any]] = {}
         for name, info in self._variables.items():
             variables_meta[name] = {
                 "var_type": info.var_type,
-                "creation_args": info.creation_args,
+                "creation_args": self._serialize_arg(info.creation_args),
             }
 
         constraints_meta: Dict[str, Dict[str, Any]] = {}
         for name, info in self._constraints.items():
+            serialized_lits = [self._serialize_arg(lit) for lit in info.user_enforcement_literals]
             constraints_meta[name] = {
-                "original_args": info.original_args,   # tuples/lists OK for json
+                "original_args": self._serialize_arg(info.original_args),
                 "constraint_type": info.constraint_type,
                 "enabled": info.enabled,
                 "tags": list(info.tags),
+                "user_enforcement_literals": serialized_lits,
             }
 
         objectives_meta = [
@@ -1174,6 +1299,7 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
                 "objective_type": obj.objective_type,
                 "name": obj.name,
                 "enabled": obj.enabled,
+                "linear_expr": self._serialize_arg(obj.linear_expr),
             }
             for obj in self._objectives
         ]
@@ -1193,40 +1319,29 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
 
     def import_from_file(self, filename: str) -> None:
         """
-        Load a model previously saved with export_to_file.
-        Restores both the OR-Tools proto and all EnhancedCpModel metadata.
+        Load a model from a saved file, restoring OR-Tools proto and metadata.
+        Rebuilds constraints from metadata to ensure consistency.
         """
-
         self._clear_model()
 
         with zipfile.ZipFile(filename, 'r') as zf:
-            # ---------- 1. Proto ----------
+            # 1. Load proto
             proto_bytes = zf.read("model.pb")
             from ortools.sat import cp_model_pb2
             proto = cp_model_pb2.CpModelProto()
             proto.ParseFromString(proto_bytes)
             self.Proto().CopyFrom(proto)
 
-            # ---------- 2. Metadata ----------
+            # 2. Load metadata
             meta_raw = zf.read("meta.json").decode("utf-8")
             meta = json.loads(meta_raw)
 
-            # ---------- 3. Variables ----------
+            # 3. Variables
             self._variables.clear()
             for name, vmeta in meta["variables"].items():
                 var_type = vmeta["var_type"]
                 args = tuple(vmeta["creation_args"])
-                # fetch the *actual* variable from the freshly-loaded proto
-                ortools_var = None
-                if var_type in ("IntVar", "BoolVar"):
-                    # OR-Tools variables are indexed by name
-                    ortools_var = self.get_variable_by_name(name)
-                elif var_type in ("IntervalVar", "OptionalIntervalVar"):
-                    # Interval vars can be found by name as well
-                    ortools_var = self.get_variable_by_name(name)
-                elif var_type == "Constant":
-                    # Constants do not need a wrapper; skip or handle specially
-                    continue
+                ortools_var = self.get_variable_by_name(name)
                 if ortools_var is None:
                     raise RuntimeError(f"Variable {name} not found in proto")
                 self._variables[name] = VariableInfo(
@@ -1236,46 +1351,54 @@ class EnhancedCpModel(EnhancedConstructorsMixin, _cp.CpModel):
                     creation_args=args,
                 )
 
-            # ---------- 4. Objectives ----------
+            # Create var_mapping
+            var_mapping = {name: info.ortools_var for name, info in self._variables.items()}
+
+            # 4. Objectives
             self._objectives.clear()
             for ometa in meta["objectives"]:
-                # The objective expression is already in the proto.
-                # We only need the wrapper.
+                linear_expr = self._deserialize_arg(ometa["linear_expr"], var_mapping)
                 obj = ObjectiveInfo(
                     objective_type=ometa["objective_type"],
-                    linear_expr=_cp.LinearExpr(),  # placeholder, not used
+                    linear_expr=linear_expr,
                     name=ometa["name"],
                 )
                 obj.enabled = ometa["enabled"]
                 self._objectives.append(obj)
+                if obj.enabled:
+                    if obj.objective_type == "Minimize":
+                        self.Minimize(linear_expr)
+                    elif obj.objective_type == "Maximize":
+                        self.Maximize(linear_expr)
 
-            # ---------- 5. Constraints ----------
+            # 5. Constraints (rebuild to ensure consistency)
             self._constraints.clear()
             for name, cmeta in meta["constraints"].items():
-                # Locate the real OR-Tools constraint in the proto
-                # (We stored its index in original_args or we can rely on name order.)
-                # For simplicity we just need the *literal* (enable variable).
-                # It is the variable named "_enable_<constraint_name>".
                 enable_name = f"_enable_{name}"
                 enable_var = self.get_variable_by_name(enable_name)
                 if enable_var is None:
-                    # Fallback: create a new BoolVar only if it is missing
-                    # (should not happen with a faithful save/load)
                     enable_var = super().NewBoolVar(enable_name)
 
-                self._constraints[name] = ConstraintInfo(
+                rehydrated_args = self._deserialize_arg(cmeta["original_args"], var_mapping)
+                info = ConstraintInfo(
                     name=name,
-                    original_args=tuple(cmeta["original_args"]),
+                    original_args=rehydrated_args,
                     constraint_type=cmeta["constraint_type"],
-                    # We do NOT store the actual OR-Tools constraint object here;
-                    # we only need the enable variable for enable/disable logic
-                    ortools_ct=enable_var,
+                    ortools_ct=None,  # Set by _recreate_constraint_in_model
                     enable_var=enable_var,
                 )
-                self._constraints[name].enabled = cmeta["enabled"]
-                self._constraints[name].tags = set(cmeta["tags"])
+                info.enabled = cmeta["enabled"]
+                info.tags = set(cmeta["tags"])
+                info.user_enforcement_literals = [
+                    self._deserialize_arg(lit, var_mapping)
+                    for lit in cmeta.get("user_enforcement_literals", [])
+                    if self._deserialize_arg(lit, var_mapping) is not None
+                ]
 
-            # ---------- 6. Counters ----------
+                # Rebuild constraint
+                self._recreate_constraint_in_model(self, info, var_mapping)
+
+            # 6. Counters
             self._constraint_counter = meta["constraint_counter"]
             self._variable_counter = meta["variable_counter"]
 

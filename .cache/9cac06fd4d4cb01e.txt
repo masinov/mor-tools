@@ -1,0 +1,15 @@
+**Primary Purpose:** This file implements an enhanced wrapper class for Google OR-Tools' CP-SAT model that extends the base CpModel with additional functionality for debugging, cloning, and I/O operations.
+
+**Key Responsibilities:**
+- Provides a drop-in replacement for `CpModel` with extended capabilities
+- Combines multiple mixins for variables, constraints, objectives, debugging, and I/O functionality
+- Manages internal state clearing through the `clear_model()` method
+- Maintains separate registries for variables, constraints, and objectives
+
+**Architecture Role:** This serves as a core facade/adapter component that sits between the OR-Tools library and the application code, providing enhanced functionality while maintaining compatibility with the original API. It acts as a central coordination point that aggregates multiple specialized mixins.
+
+**Notable Patterns:**
+- **Multiple Inheritance/Mixin Pattern:** Uses multiple inheritance to combine functionality from specialized mixin classes (`_VariablesMixin`, `_ConstraintsMixin`, etc.)
+- **Facade Pattern:** Provides a simplified interface to complex OR-Tools functionality while adding custom features
+- **Registry Pattern:** Maintains separate internal registries (`_variables`, `_constraints`, `_objectives`) for tracking model components
+- **Composition over Inheritance:** While using inheritance, it delegates to the underlying `_cp.CpModel` instance rather than replacing its functionality entirely

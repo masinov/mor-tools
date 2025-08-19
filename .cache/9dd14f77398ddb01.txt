@@ -1,0 +1,140 @@
+## Module Purpose
+This module provides enhanced variable creation capabilities for OR-Tools CP-SAT models by wrapping OR-Tools variables with metadata tracking and name collision prevention. It extends the standard CpModel with additional functionality for managing variables and their metadata.
+
+## Public API
+
+### VariableInfo Class
+**Usage pattern**: 
+```python
+from model.variables import VariableInfo
+
+# Typically created internally by _VariablesMixin
+var_info = VariableInfo(name, var_type, ortools_var, creation_args)
+```
+
+**Method signatures**:
+- `__init__(self, name: str, var_type: str, ortools_var: Union[_cp.IntVar, _cp.IntervalVar], creation_args: Tuple[Any, ...]) -> None`
+
+**Properties**:
+- `name`: Variable identifier
+- `var_type`: Type classification ("int", "bool", "interval", etc.)
+- `ortools_var`: The underlying OR-Tools variable object
+- `creation_args`: Arguments used to create the variable
+
+### _VariablesMixin Class
+**Usage pattern**: 
+```python
+from model.variables import _VariablesMixin
+from ortools.sat.python.cp_model import CpModel
+
+class MyModel(_VariablesMixin, CpModel):
+    pass
+
+model = MyModel()
+```
+
+**Method signatures**:
+
+**Variable Creation Methods**:
+- `NewIntVar(self, lb: int, ub: int, name: str) -> _cp.IntVar`
+- `NewBoolVar(self, name: str) -> _cp.IntVar`
+- `NewIntervalVar(self, start: _cp.LinearExprT, size: _cp.LinearExprT, end: _cp.LinearExprT, name: str) -> _cp.IntervalVar`
+- `NewOptionalIntervalVar(self, start: _cp.LinearExprT, size: _cp.LinearExprT, end: _cp.LinearExprT, is_present: _cp.LiteralT, name: str) -> _cp.IntervalVar`
+- `NewConstant(self, value: int) -> _cp.IntVar`
+
+**Internal Utility Methods**:
+- `_map_expr_to_new_model(self, expr: Any, var_mapping: Dict[str, Any]) -> Any`
+- `_deep_map_expr(self, expr: Any, var_mapping: Dict[str, Any]) -> Any`
+- `_ensure_variables(self) -> Dict[str, VariableInfo]`
+
+**Dependencies**: Requires `ortools.sat.python.cp_model` as `_cp`
+
+**Return types**: All variable creation methods return standard OR-Tools variable types (IntVar, IntervalVar) that can be used in constraints and expressions.
+
+## Cross-References
+
+### Imports from other modules
+- `ortools.sat.python.cp_model` (aliased as `_cp`): Base CP-SAT model functionality
+- `typing`: Type annotations (Tuple, Union, Dict, Any)
+- `__future__`: Annotations for forward references
+
+### Exports to other modules
+- `VariableInfo`: Metadata container for variables
+- `_VariablesMixin`: Mixin class for enhanced variable management
+- Variable creation methods with name collision protection
+- Expression mapping utilities for model transformation
+
+### Potential issues
+- **Circular dependencies**: The module imports from OR-Tools but doesn't appear to have circular dependencies within the project
+- **Mixin usage**: Requires proper multiple inheritance with CpModel
+- **Type safety**: Extensive use of `Any` type in expression mapping methods
+
+## Integration Examples
+
+### Basic Usage with Custom Model
+```python
+from model.variables import _VariablesMixin
+from ortools.sat.python.cp_model import CpModel
+
+class EnhancedModel(_VariablesMixin, CpModel):
+    """Model with enhanced variable tracking"""
+    
+    def get_variable_info(self, name: str) -> VariableInfo:
+        return self._ensure_variables().get(name)
+
+# Create and use enhanced model
+model = EnhancedModel()
+x = model.NewIntVar(0, 10, "x")  # Automatically tracked
+y = model.NewBoolVar("y")        # Name collision protected
+
+# Access variable metadata
+var_info = model.get_variable_info("x")
+print(f"Variable {var_info.name} of type {var_info.var_type}")
+```
+
+### Creating Constants with Automatic Naming
+```python
+model = EnhancedModel()
+const_5 = model.NewConstant(5)    # Creates "_const_5" or similar
+const_10 = model.NewConstant(10)  # Creates "_const_10"
+
+# Constants can be used in constraints like regular variables
+model.Add(x + const_5 == const_10)
+```
+
+### Expression Mapping Between Models
+```python
+# Create two models
+model1 = EnhancedModel()
+model2 = EnhancedModel()
+
+# Create variables in first model
+var1 = model1.NewIntVar(0, 10, "var1")
+
+# Create mapping and transfer expression
+var_mapping = {"var1": model2.NewIntVar(0, 10, "var1_copy")}
+expr = var1 + 5
+mapped_expr = model2._map_expr_to_new_model(expr, var_mapping)
+
+# mapped_expr now uses model2's variable
+model2.Add(mapped_expr <= 15)
+```
+
+### Interval Variable Creation
+```python
+model = EnhancedModel()
+start = model.NewIntVar(0, 100, "start_time")
+duration = 5
+end = model.NewIntVar(0, 100, "end_time")
+
+# Create interval variable with automatic tracking
+interval = model.NewIntervalVar(start, duration, end, "task_interval")
+
+# Optional interval with presence condition
+is_present = model.NewBoolVar("task_present")
+optional_interval = model.NewOptionalIntervalVar(
+    start, duration, end, is_present, "optional_task"
+)
+```
+
+The module provides a robust foundation for building constraint programming models with enhanced variable management capabilities while maintaining full compatibility with standard OR-Tools functionality.

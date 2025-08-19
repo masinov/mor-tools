@@ -1,0 +1,17 @@
+**Primary Purpose:** This file provides a mixin class that extends OR-Tools CP-SAT models with helper methods for creating common constraint patterns and boolean variables, keeping the implementation separate from the core model class.
+
+**Key Responsibilities:**
+- Creates boolean variables representing comparison constraints (greater/less than, equal/not equal)
+- Implements logical operations (AND, OR) as boolean variables
+- Handles interval-related constraints (point in interval, overlap, containment)
+- Provides subject-to constraints that conditionally apply based on boolean markers
+- Acts as a facade pattern for underlying constructor functions
+
+**Architecture Role:** This is a utility module that enhances the core OR-Tools CP-SAT functionality. It serves as an extension mechanism (via mixin) rather than a core component, allowing for cleaner separation of concerns while providing syntactic sugar for common constraint patterns.
+
+**Notable Patterns:**
+- **Mixin Pattern:** The `EnhancedConstructorsMixin` class is designed to be inherited by model classes to add functionality
+- **Facade Pattern:** Wraps multiple standalone constructor functions into a unified interface
+- **Consistent API:** All methods follow similar signatures with `self`, input parameters, and `name` for the resulting variable
+- **Type Hints:** Uses typing annotations for better code documentation and IDE support
+- **External Implementation:** The actual logic is implemented elsewhere (imported functions), keeping this as a clean interface layer

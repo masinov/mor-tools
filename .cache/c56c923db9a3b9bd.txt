@@ -1,0 +1,19 @@
+**Primary Purpose:** This file provides debugging and introspection utilities for constraint programming models, specifically focused on identifying infeasibility causes through Minimal Infeasible Subset (MIS) detection and model analysis.
+
+**Key Responsibilities:**
+- Debug infeasible models by finding minimal sets of constraints to disable
+- Provide comprehensive model summaries and validation diagnostics
+- Enable constraint introspection by type, tag, and status (enabled/disabled)
+- Create relaxed model copies by randomly disabling constraints
+- Generate subset models with specific constraint configurations
+- Manage constraint state tracking and validation
+
+**Architecture Role:** This serves as a diagnostic utility layer for constraint programming models, extending the base CP model functionality with debugging capabilities. It acts as a mixin class (`_DebugMixin`) that enhances model objects with introspection and debugging features without modifying core solving logic.
+
+**Notable Patterns:**
+- **Mixin Pattern:** Uses inheritance to extend `_cp.CpModel` with debugging capabilities while maintaining separation of concerns
+- **Constraint State Management:** Implements sophisticated tracking of enabled/disabled constraints through boolean variables and state dictionaries
+- **Model Cloning:** Uses `clone()` pattern to create modified copies for debugging without affecting original models
+- **Lazy Evaluation:** `_ensure_constraints()` method suggests deferred constraint processing or validation
+- **Visitor Pattern Elements:** Methods like `get_constraints_by_type()` and `get_constraints_by_tag()` provide filtered views of model components
+- **Diagnostic Interface:** Unified API for model analysis through summary, validation, and constraint information methods

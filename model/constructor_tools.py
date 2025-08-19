@@ -1,12 +1,14 @@
 from ortools.sat.python import cp_model as _cp
 from typing import Union, List, Tuple
 
-from model import EnhancedCpModel
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from model import EnhancedCpModel
 
 M = 9999999999999
 
 def NewGreaterOrEqualBoolVar(
-    model: EnhancedCpModel, 
+    model: 'EnhancedCpModel', 
     variable: _cp.IntVar, 
     threshold: Union[_cp.IntVar, int], 
     name: str
@@ -51,7 +53,7 @@ def NewGreaterOrEqualBoolVar(
     return geq_var
 
 def NewLessOrEqualBoolVar(
-    model: EnhancedCpModel, 
+    model: 'EnhancedCpModel', 
     variable: _cp.IntVar, 
     threshold: Union[_cp.IntVar, int], 
     name: str
@@ -96,7 +98,7 @@ def NewLessOrEqualBoolVar(
     return leq_var
 
 def NewGreaterBoolVar(
-    model: EnhancedCpModel, 
+    model: 'EnhancedCpModel', 
     variable: _cp.IntVar, 
     threshold: Union[_cp.IntVar, int], 
     name: str
@@ -141,7 +143,7 @@ def NewGreaterBoolVar(
     return g_var
 
 def NewLessBoolVar(
-    model: EnhancedCpModel,
+    model: 'EnhancedCpModel',
     variable: _cp.IntVar, 
     threshold: Union[_cp.IntVar, int], 
     name: str
@@ -186,7 +188,7 @@ def NewLessBoolVar(
     return l_var
 
 def NewEqualBoolVar(
-    model: EnhancedCpModel,
+    model: 'EnhancedCpModel',
     variable: _cp.IntVar, 
     value: Union[_cp.IntVar, int], 
     name: str
@@ -234,7 +236,7 @@ def NewEqualBoolVar(
     return eq_var
 
 def NewNotEqualBoolVar(
-    model: EnhancedCpModel,
+    model: 'EnhancedCpModel',
     variable: _cp.IntVar, 
     value: Union[_cp.IntVar, int], 
     name: str
@@ -279,7 +281,7 @@ def NewNotEqualBoolVar(
     return neq_var
 
 def NewAndBoolVar(
-    model: EnhancedCpModel, 
+    model: 'EnhancedCpModel', 
     variables: List[_cp.IntVar], 
     name: str
 ) -> _cp.IntVar:
@@ -322,7 +324,7 @@ def NewAndBoolVar(
     return and_var
 
 def NewOrBoolVar(
-    model: EnhancedCpModel, 
+    model: 'EnhancedCpModel', 
     variables: List[_cp.IntVar], 
     name: str
 ) -> _cp.IntVar:
@@ -365,7 +367,7 @@ def NewOrBoolVar(
     return or_var
 
 def NewPointInIntervalBoolVar(
-    model: EnhancedCpModel, 
+    model: 'EnhancedCpModel', 
     variable: Union[_cp.IntVar, int],
     interval: Union[Tuple[int, int], _cp.IntervalVar],
     name: str
@@ -418,7 +420,7 @@ def NewPointInIntervalBoolVar(
     return and_var
 
 def NewOverlapBoolVar(
-    model: EnhancedCpModel, 
+    model: 'EnhancedCpModel', 
     interval1: Union[_cp.IntervalVar, Tuple[int, int]], 
     interval2: Union[_cp.IntervalVar, Tuple[int, int]], 
     name: str
@@ -481,7 +483,7 @@ def NewOverlapBoolVar(
     return overlap_var
 
 def NewContainedInBoolVar(
-    model: EnhancedCpModel, 
+    model: 'EnhancedCpModel', 
     interval1: Union[_cp.IntervalVar, Tuple[int, int]], 
     interval2: Union[_cp.IntervalVar, Tuple[int, int]], 
     name: str
@@ -533,7 +535,7 @@ def NewContainedInBoolVar(
     return contained_in_var
 
 def NewMinSubjectToBools(
-    model: EnhancedCpModel, 
+    model: 'EnhancedCpModel', 
     values: Union[List[_cp.IntVar], List[int]], 
     bools: List[_cp.IntVar], 
     name: str, 
@@ -608,7 +610,7 @@ def NewMinSubjectToBools(
       return min_var
 
 def NewMaxSubjectToBools(
-    model: EnhancedCpModel, 
+    model: 'EnhancedCpModel', 
     values: Union[List[_cp.IntVar], List[int]], 
     bools: List[_cp.IntVar], 
     name: str, 
@@ -683,7 +685,7 @@ def NewMaxSubjectToBools(
       return max_var
 
 def NewOrSubjectToBools(
-    model: EnhancedCpModel, 
+    model: 'EnhancedCpModel', 
     check_bools: List[_cp.IntVar], 
     constraint_bools: List[_cp.IntVar], 
     name: str
@@ -722,7 +724,7 @@ def NewOrSubjectToBools(
     return or_var
 
 def NewAndSubjectToBools(
-    model: EnhancedCpModel, 
+    model: 'EnhancedCpModel', 
     check_bools: List[_cp.IntVar], 
     constraint_bools: List[_cp.IntVar], 
     name: str
@@ -770,133 +772,3 @@ def NewAndSubjectToBools(
 
     return and_var
 
-class EnhancedConstructorsMixin:
-    """
-    Mix-in that exposes helper constructors as *methods* on EnhancedCpModel
-    while keeping the implementation external.
-    """
-
-    # ---------- comparison booleans ----------
-    def NewGreaterOrEqualBoolVar(
-        self,
-        variable: _cp.IntVar,
-        threshold: Union[_cp.IntVar, int],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewGreaterOrEqualBoolVar(self, variable, threshold, name)
-
-    def NewLessOrEqualBoolVar(
-        self,
-        variable: _cp.IntVar,
-        threshold: Union[_cp.IntVar, int],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewLessOrEqualBoolVar(self, variable, threshold, name)
-
-    def NewGreaterBoolVar(
-        self,
-        variable: _cp.IntVar,
-        threshold: Union[_cp.IntVar, int],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewGreaterBoolVar(self, variable, threshold, name)
-
-    def NewLessBoolVar(
-        self,
-        variable: _cp.IntVar,
-        threshold: Union[_cp.IntVar, int],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewLessBoolVar(self, variable, threshold, name)
-
-    def NewEqualBoolVar(
-        self,
-        variable: _cp.IntVar,
-        value: Union[_cp.IntVar, int],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewEqualBoolVar(self, variable, value, name)
-
-    def NewNotEqualBoolVar(
-        self,
-        variable: _cp.IntVar,
-        value: Union[_cp.IntVar, int],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewNotEqualBoolVar(self, variable, value, name)
-
-    # ---------- logical helpers ----------
-    def NewAndBoolVar(
-        self,
-        variables: List[_cp.IntVar],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewAndBoolVar(self, variables, name)
-
-    def NewOrBoolVar(
-        self,
-        variables: List[_cp.IntVar],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewOrBoolVar(self, variables, name)
-
-    # ---------- interval helpers ----------
-    def NewPointInIntervalBoolVar(
-        self,
-        variable: Union[_cp.IntVar, int],
-        interval: Union[Tuple[int, int], _cp.IntervalVar],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewPointInIntervalBoolVar(self, variable, interval, name)
-
-    def NewOverlapBoolVar(
-        self,
-        interval1: Union[_cp.IntervalVar, Tuple[int, int]],
-        interval2: Union[_cp.IntervalVar, Tuple[int, int]],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewOverlapBoolVar(self, interval1, interval2, name)
-
-    def NewContainedInBoolVar(
-        self,
-        interval1: Union[_cp.IntervalVar, Tuple[int, int]],
-        interval2: Union[_cp.IntervalVar, Tuple[int, int]],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewContainedInBoolVar(self, interval1, interval2, name)
-
-    # ---------- min / max under boolean masks ----------
-    def NewMinSubjectToBools(
-        self,
-        values: Union[List[_cp.IntVar], List[int]],
-        bools: List[_cp.IntVar],
-        name: str,
-        return_bool_markers: bool = False,
-    ):
-        return NewMinSubjectToBools(self, values, bools, name, return_bool_markers)
-
-    def NewMaxSubjectToBools(
-        self,
-        values: Union[List[_cp.IntVar], List[int]],
-        bools: List[_cp.IntVar],
-        name: str,
-        return_bool_markers: bool = False,
-    ):
-        return NewMaxSubjectToBools(self, values, bools, name, return_bool_markers)
-
-    # ---------- logical OR / AND under boolean masks ----------
-    def NewOrSubjectToBools(
-        self,
-        check_bools: List[_cp.IntVar],
-        constraint_bools: List[_cp.IntVar],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewOrSubjectToBools(self, check_bools, constraint_bools, name)
-
-    def NewAndSubjectToBools(
-        self,
-        check_bools: List[_cp.IntVar],
-        constraint_bools: List[_cp.IntVar],
-        name: str,
-    ) -> _cp.IntVar:
-        return NewAndSubjectToBools(self, check_bools, constraint_bools, name)

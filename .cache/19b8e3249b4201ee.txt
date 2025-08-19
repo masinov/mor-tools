@@ -1,0 +1,18 @@
+**Primary Purpose:** This file provides objective management functionality for constraint programming models, allowing registration and control of multiple optimization objectives with metadata while enforcing single-active-objective constraints.
+
+**Key Responsibilities:**
+- Defines `ObjectiveInfo` class to wrap optimization objectives with metadata (type, expression, name)
+- Implements `_ObjectivesMixin` that extends CP model capabilities with objective management
+- Provides methods for registering minimization (`Minimize`) and maximization (`Maximize`) objectives
+- Enables single-objective enforcement through `enable_objective`/`disable_objective` methods
+- Maintains lazy-initialized objective registry for mix-in safety
+- Validates objective state consistency (exactly one enabled objective)
+
+**Architecture Role:** Acts as a core extension module that enhances the OR-Tools CP-SAT model with multi-objective management capabilities. It serves as a mixin that can be composed with the base `CpModel` to provide advanced objective handling without modifying the core library.
+
+**Notable Patterns:**
+- **Mixin Pattern:** `_ObjectivesMixin` extends base CP model functionality through inheritance while maintaining separation of concerns
+- **Lazy Initialization:** Uses `_ensure_objectives()` to defer initialization until first use for mixin safety
+- **Metadata Wrapper:** `ObjectiveInfo` follows the Decorator pattern to augment objectives with additional information
+- **Single Responsibility:** Each method handles a specific aspect of objective management (registration, activation, querying)
+- **Validation Logic:** Enforces business rules (exactly one enabled objective) with proper error handling

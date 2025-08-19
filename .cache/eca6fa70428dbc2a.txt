@@ -1,0 +1,278 @@
+## Module Purpose
+This module provides a comprehensive set of utility functions for creating boolean and integer variables in CP-SAT models that represent complex logical conditions and comparisons. It serves as a constructor toolkit for building sophisticated constraint relationships in optimization problems using Google's OR-Tools CP-SAT solver.
+
+## Public API
+
+### Comparison Boolean Variables
+
+#### NewGreaterOrEqualBoolVar
+```python
+from model.constructor_tools import NewGreaterOrEqualBoolVar
+
+bool_var = NewGreaterOrEqualBoolVar(
+    model: EnhancedCpModel,
+    variable: _cp.IntVar,
+    threshold: Union[_cp.IntVar, int],
+    name: str
+) -> _cp.IntVar
+```
+Creates a boolean variable that is 1 when `variable >= threshold`, 0 otherwise.
+
+#### NewLessOrEqualBoolVar
+```python
+from model.constructor_tools import NewLessOrEqualBoolVar
+
+bool_var = NewLessOrEqualBoolVar(
+    model: EnhancedCpModel,
+    variable: _cp.IntVar,
+    threshold: Union[_cp.IntVar, int],
+    name: str
+) -> _cp.IntVar
+```
+Creates a boolean variable that is 1 when `variable <= threshold`, 0 otherwise.
+
+#### NewGreaterBoolVar
+```python
+from model.constructor_tools import NewGreaterBoolVar
+
+bool_var = NewGreaterBoolVar(
+    model: EnhancedCpModel,
+    variable: _cp.IntVar,
+    threshold: Union[_cp.IntVar, int],
+    name: str
+) -> _cp.IntVar
+```
+Creates a boolean variable that is 1 when `variable > threshold`, 0 otherwise.
+
+#### NewLessBoolVar
+```python
+from model.constructor_tools import NewLessBoolVar
+
+bool_var = NewLessBoolVar(
+    model: EnhancedCpModel,
+    variable: _cp.IntVar,
+    threshold: Union[_cp.IntVar, int],
+    name: str
+) -> _cp.IntVar
+```
+Creates a boolean variable that is 1 when `variable < threshold`, 0 otherwise.
+
+#### NewEqualBoolVar
+```python
+from model.constructor_tools import NewEqualBoolVar
+
+bool_var = NewEqualBoolVar(
+    model: EnhancedCpModel,
+    variable: _cp.IntVar,
+    value: Union[_cp.IntVar, int],
+    name: str
+) -> _cp.IntVar
+```
+Creates a boolean variable that is 1 when `variable == value`, 0 otherwise.
+
+#### NewNotEqualBoolVar
+```python
+from model.constructor_tools import NewNotEqualBoolVar
+
+bool_var = NewNotEqualBoolVar(
+    model: EnhancedCpModel,
+    variable: _cp.IntVar,
+    value: Union[_cp.IntVar, int],
+    name: str
+) -> _cp.IntVar
+```
+Creates a boolean variable that is 1 when `variable != value`, 0 otherwise.
+
+### Logical Operation Variables
+
+#### NewAndBoolVar
+```python
+from model.constructor_tools import NewAndBoolVar
+
+bool_var = NewAndBoolVar(
+    model: EnhancedCpModel,
+    variables: List[_cp.IntVar],
+    name: str
+) -> _cp.IntVar
+```
+Creates a boolean variable that is 1 when ALL variables in the list are true.
+
+#### NewOrBoolVar
+```python
+from model.constructor_tools import NewOrBoolVar
+
+bool_var = NewOrBoolVar(
+    model: EnhancedCpModel,
+    variables: List[_cp.IntVar],
+    name: str
+) -> _cp.IntVar
+```
+Creates a boolean variable that is 1 when ANY variable in the list is true.
+
+### Interval and Containment Variables
+
+#### NewPointInIntervalBoolVar
+```python
+from model.constructor_tools import NewPointInIntervalBoolVar
+
+bool_var = NewPointInIntervalBoolVar(
+    model: EnhancedCpModel,
+    variable: Union[_cp.IntVar, int],
+    interval: Union[Tuple[int, int], _cp.IntervalVar],
+    name: str
+) -> _cp.IntVar
+```
+Creates a boolean variable that is 1 when a variable lies within an interval.
+
+#### NewOverlapBoolVar
+```python
+from model.constructor_tools import NewOverlapBoolVar
+
+bool_var = NewOverlapBoolVar(
+    model: EnhancedCpModel,
+    interval1: Union[_cp.IntervalVar, Tuple[int, int]],
+    interval2: Union[_cp.IntervalVar, Tuple[int, int]],
+    name: str
+) -> _cp.IntVar
+```
+Creates a boolean variable that is 1 when two intervals overlap.
+
+#### NewContainedInBoolVar
+```python
+from model.constructor_tools import NewContainedInBoolVar
+
+bool_var = NewContainedInBoolVar(
+    model: EnhancedCpModel,
+    interval1: Union[_cp.IntervalVar, Tuple[int, int]],
+    interval2: Union[_cp.IntervalVar, Tuple[int, int]],
+    name: str
+) -> _cp.IntVar
+```
+Creates a boolean variable that is 1 when interval1 is contained within interval2.
+
+### Conditional Aggregation Functions
+
+#### NewMinSubjectToBools
+```python
+from model.constructor_tools import NewMinSubjectToBools
+
+min_var, markers = NewMinSubjectToBools(
+    model: EnhancedCpModel,
+    values: Union[List[_cp.IntVar], List[int]],
+    bools: List[_cp.IntVar],
+    name: str,
+    return_bool_markers: bool = False
+) -> _cp.IntVar
+```
+Finds minimum value among variables where corresponding boolean is true.
+
+#### NewMaxSubjectToBools
+```python
+from model.constructor_tools import NewMaxSubjectToBools
+
+max_var, markers = NewMaxSubjectToBools(
+    model: EnhancedCpModel,
+    values: Union[List[_cp.IntVar], List[int]],
+    bools: List[_cp.IntVar],
+    name: str,
+    return_bool_markers: bool = False
+) -> _cp.IntVar
+```
+Finds maximum value among variables where corresponding boolean is true.
+
+#### NewOrSubjectToBools
+```python
+from model.constructor_tools import NewOrSubjectToBools
+
+bool_var = NewOrSubjectToBools(
+    model: EnhancedCpModel,
+    check_bools: List[_cp.IntVar],
+    constraint_bools: List[_cp.IntVar],
+    name: str
+) -> _cp.IntVar
+```
+Logical OR operation applied to pairs of boolean variables subject to constraints.
+
+#### NewAndSubjectToBools
+```python
+from model.constructor_tools import NewAndSubjectToBools
+
+bool_var = NewAndSubjectToBools(
+    model: EnhancedCpModel,
+    check_bools: List[_cp.IntVar],
+    constraint_bools: List[_cp.IntVar],
+    name: str
+) -> _cp.IntVar
+```
+Logical AND operation applied to pairs of boolean variables subject to constraints.
+
+## Cross-References
+
+### Imports from other modules
+- **ortools.sat.python.cp_model** (as _cp): Core CP-SAT model components
+- **typing**: Type annotations (Union, List, Tuple, TYPE_CHECKING)
+- **model.EnhancedCpModel**: Enhanced model class with additional functionality
+
+### Exports to other modules
+This module exports all the constructor functions listed above, making them available for:
+- Complex constraint building in scheduling problems
+- Conditional optimization logic
+- Interval and containment relationships
+- Logical operation modeling
+
+### Potential Issues
+- **Circular dependency**: The module imports `EnhancedCpModel` from `model` but may be imported by other model components
+- **Type checking**: Uses TYPE_CHECKING to avoid circular imports at runtime
+- **Dependency on EnhancedCpModel**: Requires the enhanced model with `add_constraint_tags` method
+
+## Integration Examples
+
+### Example 1: Complex Scheduling Constraints
+```python
+from model.constructor_tools import NewOverlapBoolVar, NewContainedInBoolVar
+from model import EnhancedCpModel
+
+model = EnhancedCpModel()
+task1 = model.NewIntervalVar(0, 5, 5, 'task1')
+task2 = model.NewIntervalVar(3, 4, 8, 'task2')
+
+# Check if tasks overlap
+overlaps = NewOverlapBoolVar(model, task1, task2, 'tasks_overlap')
+
+# Check if task1 is contained within task2
+contained = NewContainedInBoolVar(model, task1, task2, 'task1_in_task2')
+```
+
+### Example 2: Conditional Optimization
+```python
+from model.constructor_tools import NewMinSubjectToBools, NewGreaterOrEqualBoolVar
+
+model = EnhancedCpModel()
+values = [model.NewIntVar(0, 100, f'val_{i}') for i in range(5)]
+bools = [model.NewBoolVar(f'active_{i}') for i in range(5)]
+
+# Create conditions where values must be >= 50 to be considered
+conditions = [
+    NewGreaterOrEqualBoolVar(model, val, 50, f'cond_{i}')
+    for i, val in enumerate(values)
+]
+
+# Find minimum value among those that meet the condition
+min_valid = NewMinSubjectToBools(model, values, conditions, 'min_valid_value')
+```
+
+### Example 3: Logical Combinations
+```python
+from model.constructor_tools import NewAndBoolVar, NewOrBoolVar
+
+model = EnhancedCpModel()
+conditions = [model.NewBoolVar(f'cond_{i}') for i in range(3)]
+
+# All conditions must be true
+all_true = NewAndBoolVar(model, conditions, 'all_conditions_met')
+
+# Any condition is true
+any_true = NewOrBoolVar(model, conditions, 'any_condition_met')
+```
+
+The module provides a powerful toolkit for building complex constraint relationships in CP-SAT models, enabling sophisticated optimization problems with conditional logic, interval relationships, and logical operations.

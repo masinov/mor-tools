@@ -1,0 +1,159 @@
+## Module Purpose
+This module provides `EnhancedConstructorsMixin`, a mix-in class that exposes helper constructor methods for creating constraint-related boolean variables in Google OR-Tools CP-SAT models. It serves as a method-based interface to external constructor functions, making them available as instance methods on enhanced model classes.
+
+## Public API
+
+### EnhancedConstructorsMixin Class
+
+**Usage pattern:**
+```python
+from model.constructors import EnhancedConstructorsMixin
+from ortools.sat.python import cp_model
+
+class EnhancedCpModel(cp_model.CpModel, EnhancedConstructorsMixin):
+    pass
+
+model = EnhancedCpModel()
+bool_var = model.NewGreaterOrEqualBoolVar(variable, threshold, "name")
+```
+
+**Method signatures:**
+
+1. **Comparison Constructors:**
+```python
+def NewGreaterOrEqualBoolVar(self, variable: _cp.IntVar, 
+                           threshold: Union[_cp.IntVar, int], 
+                           name: str) -> _cp.IntVar
+
+def NewLessOrEqualBoolVar(self, variable: _cp.IntVar, 
+                         threshold: Union[_cp.IntVar, int], 
+                         name: str) -> _cp.IntVar
+
+def NewGreaterBoolVar(self, variable: _cp.IntVar, 
+                     threshold: Union[_cp.IntVar, int], 
+                     name: str) -> _cp.IntVar
+
+def NewLessBoolVar(self, variable: _cp.IntVar, 
+                  threshold: Union[_cp.IntVar, int], 
+                  name: str) -> _cp.IntVar
+
+def NewEqualBoolVar(self, variable: _cp.IntVar, 
+                   value: Union[_cp.IntVar, int], 
+                   name: str) -> _cp.IntVar
+
+def NewNotEqualBoolVar(self, variable: _cp.IntVar, 
+                      value: Union[_cp.IntVar, int], 
+                      name: str) -> _cp.IntVar
+```
+
+2. **Logical Constructors:**
+```python
+def NewAndBoolVar(self, variables: List[_cp.IntVar], name: str) -> _cp.IntVar
+def NewOrBoolVar(self, variables: List[_cp.IntVar], name: str) -> _cp.IntVar
+```
+
+3. **Interval Constructors:**
+```python
+def NewPointInIntervalBoolVar(self, variable: Union[_cp.IntVar, int], 
+                            interval: Union[Tuple[int, int], _cp.IntervalVar], 
+                            name: str) -> _cp.IntVar
+
+def NewOverlapBoolVar(self, interval1: Union[_cp.IntervalVar, Tuple[int, int]], 
+                     interval2: Union[_cp.IntervalVar, Tuple[int, int]], 
+                     name: str) -> _cp.IntVar
+
+def NewContainedInBoolVar(self, interval1: Union[_cp.IntervalVar, Tuple[int, int]], 
+                         interval2: Union[_cp.IntervalVar, Tuple[int, int]], 
+                         name: str) -> _cp.IntVar
+```
+
+4. **Subject-To Constructors:**
+```python
+def NewMinSubjectToBools(self, values: Union[List[_cp.IntVar], List[int]], 
+                        bools: List[_cp.IntVar], name: str, 
+                        return_bool_markers: bool = False)
+
+def NewMaxSubjectToBools(self, values: Union[List[_cp.IntVar], List[int]], 
+                        bools: List[_cp.IntVar], name: str, 
+                        return_bool_markers: bool = False)
+
+def NewOrSubjectToBools(self, check_bools: List[_cp.IntVar], 
+                       constraint_bools: List[_cp.IntVar], 
+                       name: str) -> _cp.IntVar
+
+def NewAndSubjectToBools(self, check_bools: List[_cp.IntVar], 
+                        constraint_bools: List[_cp.IntVar], 
+                        name: str) -> _cp.IntVar
+```
+
+**Dependencies:**
+- `ortools.sat.python.cp_model` (as `_cp`)
+- External constructor functions from `model.constructor_tools.py`
+
+**Return types:**
+- Most methods return `_cp.IntVar` (boolean variables)
+- `NewMinSubjectToBools` and `NewMaxSubjectToBools` return unspecified results (likely tuples or custom objects)
+- All return values are CP-SAT model variables that can be used in constraints
+
+## Cross-References
+
+**Imports from other modules:**
+- From `ortools.sat.python.cp_model`: Core CP-SAT model components
+- From `model.constructor_tools.py`: All 15 constructor functions (e.g., `NewGreaterOrEqualBoolVar`, `NewAndBoolVar`, etc.)
+- From `typing`: Type annotations (`List`, `Union`, `Tuple`)
+
+**Exports to other modules:**
+- `EnhancedConstructorsMixin` class for inheritance by enhanced model classes
+- No direct exports - designed to be mixed into custom model classes
+
+**Potential issues:**
+- Circular dependency risk: This module imports from `model.constructor_tools.py` which might import from this module
+- Missing import for `_cp.IntervalVar` type (though it's used in type annotations)
+- All constructor functions are imported from the same module they might be defined in
+
+## Integration Examples
+
+**Example 1: Creating an enhanced model with comparison constraints**
+```python
+from model.constructors import EnhancedConstructorsMixin
+from ortools.sat.python import cp_model
+
+class EnhancedModel(cp_model.CpModel, EnhancedConstructorsMixin):
+    pass
+
+model = EnhancedModel()
+x = model.NewIntVar(0, 10, 'x')
+y = model.NewIntVar(0, 10, 'y')
+
+# Create boolean variables for constraints
+x_ge_5 = model.NewGreaterOrEqualBoolVar(x, 5, 'x_ge_5')
+y_eq_x = model.NewEqualBoolVar(y, x, 'y_eq_x')
+
+# Use in model constraints
+model.Add(x_ge_5 == 1)
+model.Add(y_eq_x == 1)
+```
+
+**Example 2: Using logical and interval operations**
+```python
+# Create OR constraint over multiple conditions
+conditions = [
+    model.NewGreaterBoolVar(x, 8, 'x_gt_8'),
+    model.NewLessBoolVar(y, 2, 'y_lt_2')
+]
+any_condition = model.NewOrBoolVar(conditions, 'any_condition')
+
+# Check if value is in interval
+in_range = model.NewPointInIntervalBoolVar(x, (3, 7), 'x_in_3_7')
+```
+
+**Example 3: Complex subject-to constraints**
+```python
+values = [1, 3, 5, 7, 9]
+bools = [model.NewBoolVar(f'active_{i}') for i in range(5)]
+
+# Find minimum value among active options
+min_val, markers = model.NewMinSubjectToBools(
+    values, bools, 'min_value', return_bool_markers=True
+)
+```
