@@ -86,13 +86,9 @@ class _RegenMixin:
                 self._recreate_constraint_in_model_solver(info, var_mapping, solving_model)
 
         # Objective (solver-only)
-        enabled_obj = self.get_enabled_objective() if hasattr(self, "get_enabled_objective") else None
+        enabled_obj = self.get_enabled_objective()
         if enabled_obj:
-            expr = self._map_expr_to_new_model(enabled_obj.linear_expr, var_mapping)
-            if enabled_obj.objective_type == "Minimize":
-                solving_model.Minimize(expr)
-            else:
-                solving_model.Maximize(expr)
+            self._recreate_objective_in_model_solver(enabled_obj, var_mapping, solving_model)
 
         return solving_model
 

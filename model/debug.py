@@ -62,7 +62,6 @@ class _DebugMixin:
 
         # 1. First check
         simple_status = self._solve(solver)
-        print(self.Proto())
         
         if simple_status in (_cp.OPTIMAL, _cp.FEASIBLE):
             return {

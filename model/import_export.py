@@ -209,13 +209,6 @@ class _IEMixin:
         self._constraints: Dict[str, ConstraintInfo] = {}
 
         for name, cmeta in meta.get("constraints", {}).items():
-            # ensure enable var exists under the same name used originally
-            enable_name = cmeta.get("enable_var") or f"_enable_{name}"
-            enable_var = var_mapping.get(enable_name)
-            if enable_var is None:
-                enable_var = self.NewBoolVar(enable_name)
-                var_mapping[enable_name] = enable_var
-
             # rehydrate args and user literals
             rehydrated_args = self._deserialize_arg(cmeta["original_args"], var_mapping)
             user_lits = [
@@ -229,7 +222,6 @@ class _IEMixin:
                 original_args=rehydrated_args,
                 constraint_type=cmeta["constraint_type"],
                 ortools_ct=None,  # will be set by recreation
-                enable_var=enable_var,
                 enabled=bool(cmeta.get("enabled", True)),
                 tags=set(cmeta.get("tags", [])),
                 user_enforcement_literals=user_lits,

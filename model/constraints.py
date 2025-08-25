@@ -399,7 +399,6 @@ class _ConstraintsMixin:
         original_args: Any,
         constraint_type: str,
         name: Optional[str],
-        enforce_enable_var: bool = False,
     ) -> _cp.Constraint:
         """Register a constraint with full metadata."""
         constraints = self._ensure_constraints()
