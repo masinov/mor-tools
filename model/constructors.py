@@ -1,7 +1,7 @@
 from ortools.sat.python import cp_model as _cp
 from typing import List, Union, Tuple
 
-from .constructor_tools import (
+from constructor_tools import (
     NewGreaterOrEqualBoolVar,
     NewLessOrEqualBoolVar,
     NewGreaterBoolVar,

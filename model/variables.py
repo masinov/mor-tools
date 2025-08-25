@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Tuple, Union, Dict, Any, List, Optional
 import ortools.sat.python.cp_model as _cp
 
-@dataclass(slots=True)
+@dataclass
 class VariableInfo:
     """Rich wrapper around OR-Tools variables with metadata."""
     name: str

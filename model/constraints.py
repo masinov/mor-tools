@@ -22,7 +22,6 @@ class ConstraintInfo:
     original_args: Any
     constraint_type: str
     ortools_ct: _cp.Constraint
-    enable_var: _cp.IntVar
     enabled: bool = True
     tags: Set[str] = field(default_factory=set)
     user_enforcement_literals: List[_cp.LiteralT] = field(default_factory=list)
@@ -413,16 +412,12 @@ class _ConstraintsMixin:
             raise ValueError(f"Constraint name '{name}' already exists")
 
         self._constraint_counter += 1
-        enable_var = super().NewBoolVar(f"_enable_{name}")
-        if enforce_enable_var:
-            constraint.OnlyEnforceIf(enable_var)
 
         info = ConstraintInfo(
             name=name,
             original_args=original_args,
             constraint_type=constraint_type,
             ortools_ct=constraint,
-            enable_var=enable_var,
         )
         constraints[name] = info
         return _ConstraintProxy(constraint, info)

@@ -1,23 +1,27 @@
-# model_debug.py
+# debug.py
 """
 Debugging and introspection mix-in.
 
 Exposed by _DebugMixin:
   - debug_infeasible           (MIS finder)
   - summary / validate_model   (quick health checks)
-  - All get_* helpers          (lists & filters)
   - create_relaxed_copy        (random relaxation)
   - create_subset_copy         (constraint subset)
 """
 
 from __future__ import annotations
 import random
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Any
 
 import ortools.sat.python.cp_model as _cp
 
-from .constraints import ConstraintInfo
+from constraints import ConstraintInfo
+from variables import VariableInfo
+from objectives import ObjectiveInfo
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .model import EnhancedCpModel
 
 class _DebugMixin:
     """Introspection, MIS, relaxation & subset utilities."""
@@ -25,11 +29,21 @@ class _DebugMixin:
     # ------------------------------------------------------------------
     # High-level debugging
     # ------------------------------------------------------------------
+    def _solve(self, solver: _cp.CpSolver) -> int:
+        """
+        (Internal) Creates a clean solving model from the current state 
+        and solves it. Respects enabled/disabled constraints.
+        """
+        # _create_solving_model builds a new CpModel with only the enabled constraints
+        solving_model = self._create_solving_model()
+
+        return solver.Solve(solving_model)
+    
     def debug_infeasible(
         self,
         solver: Optional[_cp.CpSolver] = None,
         **solver_params,
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, object]:
         """
         Find a minimal set of constraints to disable to make the model feasible.
 
@@ -46,8 +60,10 @@ class _DebugMixin:
                 raise ValueError(f"Unknown solver parameter: {k}")
             setattr(solver.parameters, k, v)
 
-        # quick feasibility check
+        # 1. First check
         simple_status = self._solve(solver)
+        print(self.Proto())
+        
         if simple_status in (_cp.OPTIMAL, _cp.FEASIBLE):
             return {
                 "status": simple_status,
@@ -57,17 +73,33 @@ class _DebugMixin:
                 "method": "already_feasible",
             }
 
-        # build MIS sub-model -------------------------------------------------
-        mis_model = self.clone()
+        # 2. Build the specialized MIS (Minimal Infeasible Set) sub-model
+        mis_model = _cp.CpModel()
+        var_mapping = {}
+
+        # Recreate all user variables in the mis_model
+        for name, info in self._variables.items():
+            new_var = self._recreate_variable_in_model_solver(info, {}, mis_model)
+            var_mapping[name] = new_var
+
         disable_vars: List[_cp.IntVar] = []
         name_to_disable: Dict[str, _cp.IntVar] = {}
 
+        # Iterate through the constraints that are currently enabled in the main model
         for c_name in self.get_enabled_constraints():
-            info = mis_model._constraints[c_name]
+            info = self._constraints[c_name]
+
+            # A. Recreate the original constraint in the mis_model
+            recreated_ct = self._recreate_constraint_in_model_solver(info, var_mapping, mis_model)
+
+            # B. Create the control variables *in-situ* within the mis_model
             disable_var = mis_model.NewBoolVar(f"disable_{c_name}")
-            name_to_disable[c_name] = disable_var
-            mis_model.Add(disable_var + info.enable_var == 1)
+
+            # C. Enforce the constraint only if its 'disable' var is false.
+            recreated_ct.OnlyEnforceIf(disable_var.Not())
+
             disable_vars.append(disable_var)
+            name_to_disable[c_name] = disable_var
 
         if not disable_vars:
             return {
@@ -123,40 +155,58 @@ class _DebugMixin:
     # ------------------------------------------------------------------
     # Quick health checks
     # ------------------------------------------------------------------
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> Dict[str, object]:
         """One-stop overview of the model."""
+        constraints = self._ensure_constraints()
+        variables = self._ensure_variables()
+        objectives = self._ensure_objectives()
+
         c_types: Dict[str, int] = {}
-        for info in self._ensure_constraints().values():
+        for info in constraints.values():
             c_types[info.constraint_type] = c_types.get(info.constraint_type, 0) + 1
 
         v_types: Dict[str, int] = {}
-        for info in getattr(self, "_variables", {}).values():
+        for info in variables.values():
             v_types[info.var_type] = v_types.get(info.var_type, 0) + 1
 
-        all_tags = set().union(
-            *(info.tags for info in self._ensure_constraints().values())
-        )
+        all_tags = set().union(*(info.tags for info in constraints.values())) if constraints else set()
 
         return {
-            "total_constraints": len(self._ensure_constraints()),
+            "total_constraints": len(constraints),
             "enabled_constraints": len(self.get_enabled_constraints()),
             "disabled_constraints": len(self.get_disabled_constraints()),
             "constraint_types": c_types,
-            "total_variables": len(getattr(self, "_variables", {})),
+            "total_variables": len(variables),
             "variable_types": v_types,
-            "total_objectives": len(getattr(self, "_objectives", [])),
+            "total_objectives": len(objectives),
             "enabled_objective": self.get_enabled_objective() is not None,
             "all_tags": list(all_tags),
         }
 
     def validate_model(self) -> Dict[str, Any]:
-        """Basic diagnostics: disabled constraints, multiple objectives, etc."""
+        """Basic diagnostics: disabled constraints, multiple objectives, OR-Tools validation, etc."""
         issues: List[str] = []
         warnings: List[str] = []
 
+        # Disabled constraints
         disabled = self.get_disabled_constraints()
         if disabled:
             warnings.append(f"{len(disabled)} constraints are disabled")
+
+        # Multiple objectives
+        if len(getattr(self, "_objectives", [])) > 1:
+            enabled_objectives = [
+                obj.name for obj in self._objectives if obj.enabled
+            ]
+            if len(enabled_objectives) > 1:
+                issues.append(
+                    f"Multiple enabled objectives detected: {enabled_objectives}"
+                )
+
+        # OR-Tools internal validation
+        ortools_validation = super().Validate()  # call base CpModel.Validate()
+        if ortools_validation:
+            issues.append(f"OR-Tools validation: {ortools_validation.strip()}")
 
         unused_vars: List[str] = []  # placeholder for future analysis
 
@@ -168,13 +218,14 @@ class _DebugMixin:
             "unused_variables": unused_vars,
         }
 
+
     # ------------------------------------------------------------------
     # Model relaxation & subset helpers
     # ------------------------------------------------------------------
     def create_relaxed_copy(
         self,
         relaxation_factor: float = 0.1,
-    ) -> Any:  # -> EnhancedCpModel via mix-in
+    ) -> "EnhancedCpModel":
         """
         Return a relaxed copy by randomly disabling `relaxation_factor`
         fraction of currently-enabled constraints.
@@ -193,7 +244,7 @@ class _DebugMixin:
     def create_subset_copy(
         self,
         constraint_names: Sequence[str],
-    ) -> Any:  # -> EnhancedCpModel via mix-in
+    ) -> "EnhancedCpModel":
         """
         Return a copy with *only* the listed constraints enabled.
         """
@@ -203,9 +254,19 @@ class _DebugMixin:
         return subset
 
     # ------------------------------------------------------------------
-    # Internal helper (safe mix-in registry access)
+    # Internal helpers
     # ------------------------------------------------------------------
     def _ensure_constraints(self) -> Dict[str, ConstraintInfo]:
         if not hasattr(self, "_constraints"):
             self._constraints: Dict[str, ConstraintInfo] = {}
         return self._constraints
+
+    def _ensure_variables(self) -> Dict[str, VariableInfo]:
+        if not hasattr(self, "_variables"):
+            self._variables: Dict[str, VariableInfo] = {}
+        return self._variables
+
+    def _ensure_objectives(self) -> Dict[str, ObjectiveInfo]:
+        if not hasattr(self, "_objectives"):
+            self._objectives: Dict[str, ObjectiveInfo] = {}
+        return self._objectives
